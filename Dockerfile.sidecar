@@ -1,0 +1,31 @@
+# Multi-stage build for the llm-d P/D routing sidecar (disaggregated
+# prefill/decode) that KServe's LLMInferenceService prefill/decode presets
+# deploy next to the model server. Fetches upstream source at the pinned
+# version and cross-compiles for the target platform, following upstream's
+# Dockerfile.sidecar.
+# renovate: datasource=github-releases depName=llm-d/llm-d-inference-scheduler
+ARG LLM_D_ROUTER_VERSION=v0.10.0
+
+FROM --platform=$BUILDPLATFORM golang:1.26.6 AS builder
+
+ARG LLM_D_ROUTER_VERSION
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+RUN git clone --depth 1 --branch ${LLM_D_ROUTER_VERSION} https://github.com/llm-d/llm-d-inference-scheduler.git .
+
+RUN go mod download
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w -X github.com/llm-d/llm-d-router/pkg/sidecar/version.CommitSHA=$(git rev-parse HEAD) -X github.com/llm-d/llm-d-router/pkg/sidecar/version.BuildRef=${LLM_D_ROUTER_VERSION}" \
+    -o bin/pd-sidecar ./cmd/pd-sidecar
+
+FROM gcr.io/distroless/static:nonroot
+
+COPY --from=builder /workspace/bin/pd-sidecar /app/pd-sidecar
+
+USER 65532:65532
+
+ENTRYPOINT ["/app/pd-sidecar"]

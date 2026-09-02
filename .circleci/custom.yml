@@ -1,0 +1,113 @@
+# Repo-specific CircleCI jobs. The dynamic-config setup workflow in
+# .circleci/config.yml deep-merges this file into the generated
+# .circleci/workflows.yml at pipeline runtime (yq `*+`: maps merge, job lists
+# append). devctl never touches this file.
+#
+# What this file carries beyond the golden pipeline:
+#   - the second image build (Dockerfile.sidecar -> llm-d-router-disagg-sidecar):
+#     the generated image pipeline covers exactly one root Dockerfile (the EPP),
+#     so the sidecar's branch/tag/china jobs are mirrored here with the same
+#     shape.
+#   - the llm-d-cuda mirror: upstream's vLLM-based CUDA model-server image is
+#     not practically buildable from source here, so tag builds re-tag the
+#     pinned upstream tag onto gsoci byte-identically (skopeo copy --all).
+version: 2.1
+
+jobs:
+  # Mirror ghcr.io/llm-d/llm-d-cuda:<pin> -> gsoci.azurecr.io/giantswarm/llm-d-cuda:<pin>.
+  # Byte-identical (--preserve-digests, all platforms). Skipped when the
+  # destination already holds the same digest, so re-runs are cheap. Renovate
+  # bumps the pin via the `# registry:` hint below; previously mirrored tags
+  # stay on gsoci.
+  mirror-llm-d-cuda:
+    docker:
+      - image: gsoci.azurecr.io/giantswarm/skopeo:v1.22.2
+    resource_class: small
+    shell: /bin/bash
+    parameters:
+      cuda_version:
+        description: Upstream ghcr.io/llm-d/llm-d-cuda tag to mirror.
+        type: string
+        # registry: ghcr.io/llm-d/llm-d-cuda
+        default: "v0.9.0"
+    steps:
+      - run:
+          name: Login to gsoci.azurecr.io
+          command: |
+            set -euo pipefail
+            skopeo login \
+              --username "${ACR_GSOCI_USERNAME}" \
+              --password "${ACR_GSOCI_PASSWORD}" \
+              gsoci.azurecr.io
+      - run:
+          name: Mirror llm-d-cuda:<< parameters.cuda_version >> to gsoci
+          no_output_timeout: 45m
+          command: |
+            set -euo pipefail
+
+            SRC="docker://ghcr.io/llm-d/llm-d-cuda:<< parameters.cuda_version >>"
+            DEST="docker://gsoci.azurecr.io/giantswarm/llm-d-cuda:<< parameters.cuda_version >>"
+
+            SRC_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${SRC}")
+            echo "Source digest: ${SRC_DIGEST}"
+
+            if DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}" 2>/dev/null); then
+              if [ "${DEST_DIGEST}" = "${SRC_DIGEST}" ]; then
+                echo "Destination already at ${DEST_DIGEST}; nothing to do."
+                exit 0
+              fi
+              echo "Destination exists with a different digest (${DEST_DIGEST}); overwriting."
+            fi
+
+            skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
+
+workflows:
+  build:
+    jobs:
+      # Branches: validate the sidecar image build without pushing (same shape
+      # as the generated build-image job for the EPP root Dockerfile).
+      - architect/push-to-registries:
+          context: architect
+          name: build-sidecar-image
+          push: false
+          dockerfile: Dockerfile.sidecar
+          image: giantswarm/llm-d-router-disagg-sidecar
+          filters:
+            branches:
+              ignore:
+                - main
+
+      # Tag builds: push the multi-arch sidecar image to gsoci + gsociprivate.
+      - architect/push-to-registries:
+          context: architect
+          name: push-sidecar-to-registries-release
+          dockerfile: Dockerfile.sidecar
+          image: giantswarm/llm-d-router-disagg-sidecar
+          split-china-push: true
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Mirror gsoci -> Aliyun for the sidecar image.
+      - architect/sync-china-registry:
+          context: architect
+          name: sync-china-registry-sidecar
+          image: giantswarm/llm-d-router-disagg-sidecar
+          requires:
+            - push-sidecar-to-registries-release
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Tag builds: mirror the pinned llm-d-cuda image onto gsoci.
+      - mirror-llm-d-cuda:
+          context: architect
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
