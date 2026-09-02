@@ -8,28 +8,33 @@
 #     the generated image pipeline covers exactly one root Dockerfile (the EPP),
 #     so the sidecar's branch/tag/china jobs are mirrored here with the same
 #     shape.
-#   - the llm-d-cuda mirror: upstream's vLLM-based CUDA model-server image is
-#     not practically buildable from source here, so tag builds re-tag the
-#     pinned upstream tag onto gsoci byte-identically (skopeo copy --all).
+#   - the mirror list: one mirror-image invocation per pinned upstream image
+#     tag, run on every release tag. This covers images that are not
+#     practically buildable from source here (the multi-GB CUDA model server)
+#     and the exact tags the shipped kserve llmisvc presets pin, so a
+#     registry-only override of the presets to gsoci resolves every image.
 version: 2.1
 
 jobs:
-  # Mirror ghcr.io/llm-d/llm-d-cuda:<pin> -> gsoci.azurecr.io/giantswarm/llm-d-cuda:<pin>.
+  # Mirror ghcr.io/llm-d/<image>:<version> -> gsoci.azurecr.io/giantswarm/<image>:<version>.
   # Byte-identical (--preserve-digests, all platforms). Skipped when the
-  # destination already holds the same digest, so re-runs are cheap. Renovate
-  # bumps the pin via the `# registry:` hint below; previously mirrored tags
-  # stay on gsoci.
-  mirror-llm-d-cuda:
+  # destination already holds the same digest, so re-runs are cheap. Mirror
+  # jobs never delete: previously mirrored tags stay on gsoci after a pin
+  # moves on, so preset-pinned tags remain resolvable forever.
+  mirror-image:
     docker:
       - image: gsoci.azurecr.io/giantswarm/skopeo:v1.22.2
     resource_class: small
     shell: /bin/bash
     parameters:
-      cuda_version:
-        description: Upstream ghcr.io/llm-d/llm-d-cuda tag to mirror.
+      image:
+        description: >
+          Image name, used for both the ghcr.io/llm-d/ source and the
+          gsoci.azurecr.io/giantswarm/ destination.
         type: string
-        # registry: ghcr.io/llm-d/llm-d-cuda
-        default: "v0.9.0"
+      version:
+        description: Upstream tag to mirror.
+        type: string
     steps:
       - run:
           name: Login to gsoci.azurecr.io
@@ -40,13 +45,14 @@ jobs:
               --password "${ACR_GSOCI_PASSWORD}" \
               gsoci.azurecr.io
       - run:
-          name: Mirror llm-d-cuda:<< parameters.cuda_version >> to gsoci
+          name: Mirror << parameters.image >>:<< parameters.version >> to gsoci
+          # Generous: the llm-d-cuda copies move multi-GB layers.
           no_output_timeout: 45m
           command: |
             set -euo pipefail
 
-            SRC="docker://ghcr.io/llm-d/llm-d-cuda:<< parameters.cuda_version >>"
-            DEST="docker://gsoci.azurecr.io/giantswarm/llm-d-cuda:<< parameters.cuda_version >>"
+            SRC="docker://ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>"
+            DEST="docker://gsoci.azurecr.io/giantswarm/<< parameters.image >>:<< parameters.version >>"
 
             SRC_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${SRC}")
             echo "Source digest: ${SRC_DIGEST}"
@@ -103,9 +109,99 @@ workflows:
             branches:
               ignore: /.*/
 
-      # Tag builds: mirror the pinned llm-d-cuda image onto gsoci.
-      - mirror-llm-d-cuda:
+      # --- Mirror list: runs on every release tag. ---
+      # Renovate bumps the pins that carry a `# registry:` hint above their
+      # `version:` line (org-wide regex manager, docker datasource, semver).
+      # Pins without a hint are held at exactly what the shipped
+      # giantswarm/kserve llmisvc presets reference and only move when the
+      # presets are re-vendored.
+
+      # Current llm-d-cuda pin, Renovate-tracked.
+      - mirror-image:
           context: architect
+          name: mirror-llm-d-cuda
+          image: llm-d-cuda
+          # registry: ghcr.io/llm-d/llm-d-cuda
+          version: "v0.9.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # llm-d-cuda tag the shipped kserve llmisvc worker presets pin.
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-cuda-preset-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Router tags the shipped kserve llmisvc presets pin. These byte-identical
+      # upstream mirrors complement (not replace) the source-built
+      # repo-versioned router images above: the presets reference the upstream
+      # tags verbatim, so a registry-only override needs them present on gsoci.
+      # Deliberately not Renovate-tracked -- newer upstream router releases are
+      # covered by the source builds via LLM_D_ROUTER_VERSION.
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-router-disagg-sidecar-preset-pin
+          image: llm-d-router-disagg-sidecar
+          version: "v0.9.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-router-endpoint-picker-preset-pin
+          image: llm-d-router-endpoint-picker
+          version: "v0.9.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Tokenizer sidecar the shipped kserve llmisvc presets pin. Manually
+      # pinned: upstream tags follow the bundled vLLM version (`vllm-v*`, not
+      # semver), which the org-wide Renovate hint manager cannot parse.
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-uds-tokenizer
+          image: llm-d-uds-tokenizer
+          version: "vllm-v0.19.1"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Latency-predictor images for the opt-in llmisvc latency-predicted
+      # scheduling feature, Renovate-tracked. The shipped presets pin v0.8.0;
+      # once mirrored, that tag stays on gsoci even after the pin here moves.
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-latency-predictor-training-server
+          image: llm-d-latency-predictor-training-server
+          # registry: ghcr.io/llm-d/llm-d-latency-predictor-training-server
+          version: "v0.8.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-latency-predictor-prediction-server
+          image: llm-d-latency-predictor-prediction-server
+          # registry: ghcr.io/llm-d/llm-d-latency-predictor-prediction-server
+          version: "v0.8.0"
           filters:
             tags:
               only: /^v.*/
