@@ -5,7 +5,7 @@
 # renovate: datasource=github-releases depName=llm-d/llm-d-inference-scheduler
 ARG LLM_D_ROUTER_VERSION=v0.10.0
 
-FROM --platform=$BUILDPLATFORM golang:1.26.6 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS builder
 
 ARG LLM_D_ROUTER_VERSION
 ARG TARGETOS
