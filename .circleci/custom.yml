@@ -112,11 +112,15 @@ workflows:
       # --- Mirror list: runs on every release tag. ---
       # Renovate bumps the pins that carry a `# registry:` hint above their
       # `version:` line (org-wide regex manager, docker datasource, semver).
-      # Pins without a hint are held at exactly what the shipped
-      # giantswarm/kserve llmisvc presets reference and only move when the
-      # presets are re-vendored.
+      # Every pin is the upstream tag verbatim, including whether or not it
+      # carries a `v` prefix: the hint manager captures the digits only and
+      # leaves a literal `v` in the pin alone, so the pin's shape has to match
+      # the registry's. Pins without a hint are held at exactly what the
+      # shipped giantswarm/kserve llmisvc presets reference and only move when
+      # the presets are re-vendored.
 
-      # Current llm-d-cuda pin, Renovate-tracked.
+      # Current llm-d-cuda pin, Renovate-tracked. Upstream tags with a `v`
+      # prefix, so the pin keeps the literal `v`.
       - mirror-image:
           context: architect
           name: mirror-llm-d-cuda
@@ -185,12 +189,15 @@ workflows:
       # Latency-predictor images for the opt-in llmisvc latency-predicted
       # scheduling feature, Renovate-tracked. The shipped presets pin v0.8.0;
       # once mirrored, that tag stays on gsoci even after the pin here moves.
+      # Upstream tags these two images without a `v` prefix (0.9.0, 0.9, 0:
+      # docker/metadata-action semver patterns in their release workflow), so
+      # the pins carry the bare tag.
       - mirror-image:
           context: architect
           name: mirror-llm-d-latency-predictor-training-server
           image: llm-d-latency-predictor-training-server
           # registry: ghcr.io/llm-d/llm-d-latency-predictor-training-server
-          version: "v0.9.0"
+          version: "0.9.0"
           filters:
             tags:
               only: /^v.*/
@@ -201,7 +208,7 @@ workflows:
           name: mirror-llm-d-latency-predictor-prediction-server
           image: llm-d-latency-predictor-prediction-server
           # registry: ghcr.io/llm-d/llm-d-latency-predictor-prediction-server
-          version: "v0.9.0"
+          version: "0.9.0"
           filters:
             tags:
               only: /^v.*/

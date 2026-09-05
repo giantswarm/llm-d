@@ -44,8 +44,10 @@ upstream tag verbatim. Current tag set:
 | `llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0` | mirror (current, Renovate-tracked) |
 | `llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0` | mirror (llmisvc preset pin) |
 | `llm-d-uds-tokenizer:vllm-v0.19.1` | `llm-d-uds-tokenizer:vllm-v0.19.1` | mirror (llmisvc preset pin) |
-| `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (llmisvc preset pin, Renovate-tracked) |
-| `llm-d-latency-predictor-prediction-server:v0.8.0` | `llm-d-latency-predictor-prediction-server:v0.8.0` | mirror (llmisvc preset pin, Renovate-tracked) |
+| `llm-d-latency-predictor-training-server:0.9.0` | `llm-d-latency-predictor-training-server:0.9.0` | mirror (current, Renovate-tracked) |
+| `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (llmisvc preset pin) |
+| `llm-d-latency-predictor-prediction-server:0.9.0` | `llm-d-latency-predictor-prediction-server:0.9.0` | mirror (current, Renovate-tracked) |
+| `llm-d-latency-predictor-prediction-server:v0.8.0` | `llm-d-latency-predictor-prediction-server:v0.8.0` | mirror (llmisvc preset pin) |
 
 Every repo release rebuilds the two router images from upstream source at the
 pinned `LLM_D_ROUTER_VERSION`, so the source-built gsoci tags map to upstream
@@ -83,7 +85,12 @@ Renovate tracks the semver pins:
 - The mirror-list entries in `.circleci/custom.yml` that carry a
   `# registry:` hint above their `version:` line (org-wide regex manager,
   docker datasource): the current `llm-d-cuda` pin and the two
-  latency-predictor pins.
+  latency-predictor pins. Each pin is the upstream tag verbatim, `v` prefix
+  included or not: the hint manager rewrites only the digits and leaves a
+  literal `v` in the pin alone, so the pin's shape has to match the
+  registry's. `llm-d-cuda` is tagged `v0.9.0` upstream and its pin keeps the
+  `v`; the latency-predictor images are tagged bare (`0.9.0`) and their pins
+  carry the bare tag.
 
 The remaining mirror-list entries are held manually at exactly what the
 shipped kserve llmisvc presets reference and only move when
