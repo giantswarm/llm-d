@@ -13,10 +13,16 @@
 #     practically buildable from source here (the multi-GB CUDA model server)
 #     and the exact tags the shipped kserve llmisvc presets pin, so a
 #     registry-only override of the presets to gsoci resolves every image.
+#   - the fast-to-pull variant set under gsoci.azurecr.io/giantswarm/llm-d-fast/:
+#     every mirrored image once more under that prefix (mirror-image's
+#     fast-copy), except llm-d-cuda, which fast-image repacks into small
+#     zstd layers there. Pointing the presets' registry prefix at llm-d-fast/
+#     swaps the variant in without touching a tag.
 version: 2.1
 
 jobs:
-  # Mirror ghcr.io/llm-d/<image>:<version> -> gsoci.azurecr.io/giantswarm/<image>:<version>.
+  # Mirror ghcr.io/llm-d/<image>:<version> -> gsoci.azurecr.io/giantswarm/<image>:<version>
+  # and, with fast-copy, -> gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>.
   # Byte-identical (--preserve-digests, all platforms). Skipped when the
   # destination already holds the same digest, so re-runs are cheap. Mirror
   # jobs never delete: previously mirrored tags stay on gsoci after a pin
@@ -35,6 +41,14 @@ jobs:
       version:
         description: Upstream tag to mirror.
         type: string
+      fast-copy:
+        description: >
+          Also copy the image into the gsoci.azurecr.io/giantswarm/llm-d-fast/
+          prefix, the fast-to-pull variant set: a registry prefix pointed there
+          has to resolve every image the presets reference. Off for the image
+          fast-image repacks under that prefix instead.
+        type: boolean
+        default: true
     steps:
       - run:
           name: Login to gsoci.azurecr.io
@@ -52,20 +66,214 @@ jobs:
             set -euo pipefail
 
             SRC="docker://ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>"
-            DEST="docker://gsoci.azurecr.io/giantswarm/<< parameters.image >>:<< parameters.version >>"
+            DESTS=("docker://gsoci.azurecr.io/giantswarm/<< parameters.image >>:<< parameters.version >>")
+            if [ "<< parameters.fast-copy >>" = "true" ]; then
+              DESTS+=("docker://gsoci.azurecr.io/giantswarm/llm-d-fast/<< parameters.image >>:<< parameters.version >>")
+            fi
 
             SRC_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${SRC}")
             echo "Source digest: ${SRC_DIGEST}"
 
-            if DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}" 2>/dev/null); then
-              if [ "${DEST_DIGEST}" = "${SRC_DIGEST}" ]; then
-                echo "Destination already at ${DEST_DIGEST}; nothing to do."
-                exit 0
+            for DEST in "${DESTS[@]}"; do
+              if DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}" 2>/dev/null); then
+                if [ "${DEST_DIGEST}" = "${SRC_DIGEST}" ]; then
+                  echo "${DEST} already at ${DEST_DIGEST}; nothing to do."
+                  continue
+                fi
+                echo "${DEST} exists with a different digest (${DEST_DIGEST}); overwriting."
               fi
-              echo "Destination exists with a different digest (${DEST_DIGEST}); overwriting."
-            fi
+              # Within one registry the blobs are mounted across repositories, so the
+              # second destination costs no transfer.
+              skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
+            done
 
-            skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
+  # Repack ghcr.io/llm-d/<image>:<version> into
+  # gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>: the same
+  # filesystem and the same image config, cut into layers of at most
+  # max-layer-bytes (uncompressed) and zstd-compressed, so a node's container
+  # runtime pulls the bulk of the image on parallel streams and decompresses it
+  # several times faster than gzip. Single-platform (GPU nodes are amd64); the
+  # byte-identical multi-platform mirror stays next to it. See scripts/relayer.py
+  # and the README for the mechanics.
+  #
+  # Idempotent like mirror-image: the manifest records the source platform
+  # manifest's digest as org.opencontainers.image.base.digest, and the job
+  # halts when the destination already carries the current one. With
+  # push: false (branches) the whole build and every verification run, only
+  # the publish is skipped -- the PR proves the mechanism on the real image.
+  fast-image:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: large
+    shell: /bin/bash
+    parameters:
+      image:
+        description: Image name under ghcr.io/llm-d/ (source) and gsoci.azurecr.io/giantswarm/llm-d-fast/ (destination).
+        type: string
+      version:
+        description: Upstream tag to repack.
+        type: string
+      platform:
+        description: The platform to repack; the variant is single-platform.
+        type: string
+        default: linux/amd64
+      push:
+        description: Publish to gsoci; off on branches, where the job only proves the build.
+        type: boolean
+        default: true
+      max-layer-bytes:
+        description: Uncompressed cap per layer; the compressed layers land at roughly a third of it.
+        type: integer
+        default: 1200000000
+      zstd-level:
+        description: zstd compression level (decompression speed does not depend on it).
+        type: integer
+        default: 9
+    environment:
+      SRC: ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>
+      DEST: gsoci.azurecr.io/giantswarm/llm-d-fast/<< parameters.image >>:<< parameters.version >>
+      LOCAL: 127.0.0.1:5000/llm-d-fast/<< parameters.image >>:<< parameters.version >>
+      PLATFORM: << parameters.platform >>
+      WORK: /home/circleci/fast-image
+      # renovate: datasource=github-releases depName=google/go-containerregistry
+      CRANE_VERSION: v0.22.1
+      # The registry the smoke test pulls from; a plain OCI registry that serves zstd layers.
+      ZOT_IMAGE: gsoci.azurecr.io/giantswarm/zot:v2.1.9
+    steps:
+      - checkout
+      - run:
+          name: Install crane and zstd
+          command: |
+            set -euo pipefail
+            df -h / | tail -1
+            command -v zstd >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+            RELEASE="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}"
+            curl -fsSL "${RELEASE}/go-containerregistry_Linux_x86_64.tar.gz" -o /tmp/crane.tgz
+            curl -fsSL "${RELEASE}/checksums.txt" \
+              | grep ' go-containerregistry_Linux_x86_64.tar.gz$' | sed 's#  .*#  /tmp/crane.tgz#' | sha256sum -c -
+            sudo tar -C /usr/local/bin -xzf /tmp/crane.tgz crane
+            crane version; zstd --version; python3 --version; docker --version; jq --version
+            mkdir -p "${WORK}"
+      - when:
+          condition: << parameters.push >>
+          steps:
+            - run:
+                name: Halt when << parameters.image >>:<< parameters.version >> is already repacked from the current source
+                command: |
+                  set -euo pipefail
+                  SRC_DIGEST=$(crane digest --platform "${PLATFORM}" "${SRC}")
+                  DEST_BASE=$(crane manifest "${DEST}" 2>/dev/null \
+                    | jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' || true)
+                  if [ "${DEST_BASE}" = "${SRC_DIGEST}" ]; then
+                    echo "${DEST} is already repacked from ${SRC_DIGEST}; nothing to do."
+                    circleci-agent step halt
+                  fi
+                  echo "${DEST}: base ${DEST_BASE:-absent}, source ${SRC_DIGEST}"
+      - run:
+          name: Pull the source image (<< parameters.platform >>)
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            cd "${WORK}"
+            crane digest --platform "${PLATFORM}" "${SRC}" > source-digest
+            crane manifest --platform "${PLATFORM}" "${SRC}" > source-manifest.json
+            crane config --platform "${PLATFORM}" "${SRC}" > config.json
+            crane pull --platform "${PLATFORM}" "${SRC}" src.tar
+            echo "source ${SRC}@$(cat source-digest): $(jq '.layers | length' source-manifest.json) layers," \
+              "$(jq '[.layers[].size] | add' source-manifest.json) bytes compressed," \
+              "largest layer $(jq '[.layers[].size] | max' source-manifest.json) bytes"
+            df -h / | tail -1
+      - run:
+          name: Plan the layers (<= << parameters.max-layer-bytes >> bytes uncompressed each)
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            crane export - - < "${WORK}/src.tar" \
+              | python3 scripts/relayer.py plan --max-layer-bytes << parameters.max-layer-bytes >> -o "${WORK}/plan.json"
+      - run:
+          name: Repack into zstd layers
+          no_output_timeout: 45m
+          command: |
+            set -euo pipefail
+            crane export - - < "${WORK}/src.tar" \
+              | python3 scripts/relayer.py split \
+                  --plan "${WORK}/plan.json" --config "${WORK}/config.json" \
+                  --source-ref "${SRC}" --source-digest "$(cat "${WORK}/source-digest")" \
+                  --out "${WORK}/layout" --report "${WORK}/report.json" \
+                  --zstd-level << parameters.zstd-level >> --zstd-threads "$(nproc)"
+            df -h / | tail -1
+      - run:
+          name: Verify the repacked image against the source
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            REPO="$(pwd)"
+            cd "${WORK}"
+
+            # Every layer within the cap, compressed and uncompressed.
+            jq -e --argjson cap << parameters.max-layer-bytes >> \
+              '.largest_compressed <= $cap and ([.layers[].uncompressed] | max) <= $cap' report.json > /dev/null \
+              || { echo "a layer exceeds the cap of << parameters.max-layer-bytes >> bytes:"; \
+                   jq -c '.layers[] | {layer, compressed, uncompressed}' report.json; exit 1; }
+
+            # The filesystem: the same entries with the same size, mode, owner,
+            # mtime and link target. The root directory entry is the one thing
+            # the repacked layers do not carry (runtimes create the root); the
+            # trailing slash on directory names is the tar writer's spelling.
+            normalize() { awk '$6 != "." && $6 != "/"' | sed -E 's/ +/ /g; s#/$##' | LC_ALL=C sort -u; }
+            crane export - - < src.tar | tar -tv --full-time | normalize > listing-source.txt
+            for blob in $(jq -r '.layers[].digest' report.json); do
+              zstd -dc "layout/blobs/sha256/${blob#sha256:}" | tar -tv --full-time
+            done | normalize > listing-fast.txt
+            cmp listing-source.txt listing-fast.txt
+            echo "filesystem: $(wc -l < listing-fast.txt) entries identical"
+
+            # The config: everything but rootfs.diff_ids and history.
+            CONFIG_BLOB="layout/blobs/sha256/$(jq -r '.config_digest' report.json | cut -d: -f2)"
+            cmp <(jq -S 'del(.rootfs, .history)' "${CONFIG_BLOB}") <(jq -S 'del(.rootfs, .history)' config.json)
+            echo "config: identical"
+
+            rm -f src.tar listing-source.txt listing-fast.txt
+            python3 "${REPO}/scripts/relayer.py" table --report report.json --source-manifest source-manifest.json | tee layers.md
+      - run:
+          name: Smoke-run the repacked image from a local registry
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            cd "${WORK}"
+            cat > zot.json \<<'EOF'
+            {"distSpecVersion": "1.1.1", "storage": {"rootDirectory": "/var/lib/registry"}, "http": {"address": "0.0.0.0", "port": "5000"}, "log": {"level": "warn"}}
+            EOF
+            docker run -d --name zot -p 127.0.0.1:5000:5000 -v "${PWD}/zot.json:/etc/zot/config.json:ro" "${ZOT_IMAGE}"
+            for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/v2/ > /dev/null && break; sleep 1; done
+            crane push layout "${LOCAL}"
+            docker pull "${LOCAL}"
+            # Through the image's own entrypoint; the CPU-only import is what a GPU-less runner can prove.
+            docker run --rm "${LOCAL}" python3 -c 'import vllm, torch; print("vllm", vllm.__version__, "torch", torch.__version__)'
+            docker rm -f zot > /dev/null
+            df -h / | tail -1
+      - when:
+          condition: << parameters.push >>
+          steps:
+            - run:
+                name: Publish to gsoci.azurecr.io
+                no_output_timeout: 30m
+                command: |
+                  set -euo pipefail
+                  cd "${WORK}"
+                  printf '%s' "${ACR_GSOCI_PASSWORD}" \
+                    | crane auth login gsoci.azurecr.io --username "${ACR_GSOCI_USERNAME}" --password-stdin
+                  crane push layout "${DEST}"
+                  # The registry holds exactly the manifest that was built and verified.
+                  cmp <(crane manifest "${DEST}" | jq -S .) \
+                      <(jq -S . "layout/blobs/sha256/$(jq -r '.manifest_digest' report.json | cut -d: -f2)")
+                  echo "published ${DEST}@$(crane digest "${DEST}")"
+      - store_artifacts:
+          path: /home/circleci/fast-image/plan.json
+      - store_artifacts:
+          path: /home/circleci/fast-image/report.json
+      - store_artifacts:
+          path: /home/circleci/fast-image/layers.md
 
 workflows:
   build:
@@ -78,6 +286,21 @@ workflows:
           push: false
           dockerfile: Dockerfile.sidecar
           image: giantswarm/llm-d-router-disagg-sidecar
+          filters:
+            branches:
+              ignore:
+                - main
+
+      # Branches: repack the current llm-d-cuda pin without publishing. Proves
+      # the relayer on the real image on every PR, including the Renovate PR
+      # that moves the pin.
+      - fast-image:
+          context: architect
+          name: build-fast-image
+          image: llm-d-cuda
+          # registry: ghcr.io/llm-d/llm-d-cuda
+          version: "v0.9.0"
+          push: false
           filters:
             branches:
               ignore:
@@ -120,10 +343,23 @@ workflows:
       # the presets are re-vendored.
 
       # Current llm-d-cuda pin, Renovate-tracked. Upstream tags with a `v`
-      # prefix, so the pin keeps the literal `v`.
+      # prefix, so the pin keeps the literal `v`. No fast-copy: fast-image
+      # repacks this image under the llm-d-fast/ prefix.
       - mirror-image:
           context: architect
           name: mirror-llm-d-cuda
+          image: llm-d-cuda
+          # registry: ghcr.io/llm-d/llm-d-cuda
+          version: "v0.9.0"
+          fast-copy: false
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - fast-image:
+          context: architect
+          name: fast-image-llm-d-cuda
           image: llm-d-cuda
           # registry: ghcr.io/llm-d/llm-d-cuda
           version: "v0.9.0"
@@ -137,6 +373,17 @@ workflows:
       - mirror-image:
           context: architect
           name: mirror-llm-d-cuda-preset-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
+          fast-copy: false
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - fast-image:
+          context: architect
+          name: fast-image-llm-d-cuda-preset-pin
           image: llm-d-cuda
           version: "v0.8.0"
           filters:
