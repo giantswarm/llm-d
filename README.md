@@ -12,7 +12,10 @@ The mirror set covers exactly the image tags the shipped
 [giantswarm/kserve](https://github.com/giantswarm/kserve) llmisvc well-known
 presets (`charts/kserve-runtime-configs`, `files/llmisvcconfigs`) pin, so a
 registry-only override of the presets to `gsoci.azurecr.io/giantswarm/`
-resolves every referenced image.
+resolves every referenced image. The same set exists once more under
+`gsoci.azurecr.io/giantswarm/llm-d-fast/`, with the model-server image
+repacked into small zstd layers so a GPU node pulls it in a fraction of the
+time — see [the fast-to-pull variant set](#the-fast-to-pull-variant-set-llm-d-fast).
 
 ## Artifacts on `gsoci.azurecr.io/giantswarm/`
 
@@ -48,6 +51,15 @@ upstream tag verbatim. Current tag set:
 | `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (llmisvc preset pin) |
 | `llm-d-latency-predictor-prediction-server:0.9.0` | `llm-d-latency-predictor-prediction-server:0.9.0` | mirror (current, Renovate-tracked) |
 | `llm-d-latency-predictor-prediction-server:v0.8.0` | `llm-d-latency-predictor-prediction-server:v0.8.0` | mirror (llmisvc preset pin) |
+| `llm-d-fast/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | repacked variant (current, Renovate-tracked) |
+| `llm-d-fast/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | repacked variant (llmisvc preset pin) |
+| `llm-d-fast/<every other mirror row>` | as above | digest-identical copy of the mirror |
+
+A repacked variant's own digest changes with the compressor that built it;
+the source it was repacked from is recorded in its manifest as
+`org.opencontainers.image.base.digest` (the digests listed above) and
+`org.opencontainers.image.base.name`, readable with
+`crane manifest gsoci.azurecr.io/giantswarm/llm-d-fast/llm-d-cuda:v0.8.0 | jq .annotations`.
 
 Every repo release rebuilds the two router images from upstream source at the
 pinned `LLM_D_ROUTER_VERSION`, so the source-built gsoci tags map to upstream
@@ -62,6 +74,100 @@ image repositories were removed upstream; the current names (mirrored here)
 are `llm-d-router-disagg-sidecar` and `llm-d-router-endpoint-picker`, both
 built from the `llm-d-inference-scheduler` git repository (Go module
 `github.com/llm-d/llm-d-router`).
+
+## The fast-to-pull variant set: `llm-d-fast/`
+
+`llm-d-cuda:v0.8.0` (linux/amd64) is 8.8 GB of gzip-compressed layers, and
+5.8 GB of that is a single layer. A container runtime pulls every layer on
+one HTTPS stream and gunzips it on one core, so that layer alone is a
+single-stream download of at least a minute (one stream from the registry to
+a node measures about 95 MB/s where four streams in parallel sum to about
+300 MB/s) followed by a single-core gunzip of 15 GB. A GPU node pulls the
+image in 130–150 s, and every small image pulled beside it slows down
+several-fold — which delays the GPU operator's operands and with them the
+GPU becoming schedulable.
+
+`gsoci.azurecr.io/giantswarm/llm-d-fast/llm-d-cuda:<tag>` is the same image
+— the same files with the same owners, modes, mtimes, symlinks, hardlinks
+and extended attributes, and the same image config (ENV, ENTRYPOINT, USER,
+WORKDIR, labels) — repacked into 14 layers of at most 1.2 GB uncompressed
+(0.09–0.84 GB compressed) and zstd-compressed
+(`application/vnd.oci.image.layer.v1.tar+zstd`). containerd's parallel layer
+downloads (three at a time by default) now work on the bulk of the image,
+zstd decompresses three to five times faster than gzip per core, and the
+whole image is 6.6 GB on the wire instead of 8.8 GB. The variant is
+single-platform (linux/amd64, the platform of GPU nodes); the multi-platform
+byte-identical mirror stays at `gsoci.azurecr.io/giantswarm/llm-d-cuda:<tag>`.
+
+Every other image of the mirror set is copied digest-identically under the
+same prefix, so the whole preset set resolves there: in the
+`kserve-runtime-configs` chart, `kserve.llmisvcConfigs.imageRegistry:
+gsoci.azurecr.io/giantswarm/llm-d-fast/` swaps the variant in without
+touching a tag.
+
+### How it is built
+
+[`scripts/relayer.py`](./scripts/relayer.py) (standard-library Python plus
+the `zstd` CLI) makes two passes over the flattened filesystem of the source
+image as `crane export` writes it — one tar stream with every file exactly
+once, whiteouts already applied — so the 15 GB filesystem is never stored:
+
+1. `plan` sizes every directory and cuts the tree into items: whole subtrees
+   where they fit under the cap, otherwise a directory's own entry with its
+   direct files and its subdirectories as items of their own (a directory
+   whose direct files alone exceed the cap is cut file by file). The items
+   are bin-packed first-fit-decreasing. Hardlinks are always placed in their
+   target's layer — an OCI hardlink is only valid within one layer — so
+   nothing is copied and the repacked filesystem is byte-for-byte the input.
+2. `split` streams every entry into its layer (one `zstd` per layer, the
+   uncompressed digest hashed on the way), emits each layer's ancestor
+   directories with the source's metadata so every layer applies cleanly on
+   its own, and writes an OCI image layout whose config is the source config
+   with only `rootfs.diff_ids` and `history` replaced. The manifest records
+   the source in `org.opencontainers.image.base.name` and `.base.digest`.
+
+The CircleCI job `fast-image` ([`.circleci/custom.yml`](./.circleci/custom.yml))
+runs on every release tag for each pinned `llm-d-cuda` tag, pulling the
+source from `ghcr.io/llm-d/` (the same digest the mirror carries). Before
+anything is published it verifies the result against the source: the sorted
+`tar -tv` listing of the source filesystem equals the union of the layers'
+listings (108,032 entries for v0.8.0 — sizes, modes, owners, mtimes and link
+targets), the config minus `rootfs`/`history` is identical, every layer is
+within the cap, and the image runs — pushed to a local registry, pulled by
+Docker and started through its own entrypoint with `python3 -c 'import vllm,
+torch'`. It then publishes with `crane push` and checks that the registry
+holds exactly the manifest it built. The job is idempotent: it halts when the
+destination's `base.digest` annotation already names the current source
+platform manifest. On branches the same job runs with `push: false`, so
+every PR — including the Renovate PR that moves the pin — proves the
+mechanism on the real image.
+
+### Layers of `llm-d-fast/llm-d-cuda:v0.8.0` (linux/amd64)
+
+Source: 50 gzip layers, 8.80 GB compressed, largest 5.81 GB (then 1.51 GB,
+1.08 GB and 47 small ones). Repacked with `zstd -9` (level 12 costs 60 % more
+CPU for the same size; level 19 eleven times the CPU for 12 % fewer bytes):
+14 layers, 6.62 GB compressed for 15.63 GB of filesystem, largest 0.84 GB.
+
+| Layer | Compressed | Uncompressed | Entries | Contents |
+|---|---|---|---|---|
+| 0 | 0.09 GB | 1.20 GB | 8795 | `site-packages/flashinfer_cubin/…/fmha/trtllm-gen` (8781 files), `site-packages/fastapi_cli`, `/afs` |
+| 1 | 0.81 GB | 1.20 GB | 12 | `site-packages/nvidia/cu13/lib` (8 files) and two small flashinfer directories |
+| 2 | 0.84 GB | 1.20 GB | 48 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (45 files), `site-packages/flashinfer_jit_cache/jit_cache/page` |
+| 3 | 0.45 GB | 1.20 GB | 12867 | `site-packages/torch`, `site-packages/lmcache` and 2 more |
+| 4 | 0.45 GB | 1.20 GB | 6235 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (26 files), `/usr/local/cuda-13.0/compat`, `/usr/lib` and 2 more |
+| 5 | 0.50 GB | 1.20 GB | 1468 | `site-packages/triton`, `site-packages/nvidia/cudnn`, `site-packages/numpy` and 3 more |
+| 6 | 0.32 GB | 1.20 GB | 4705 | `site-packages/nvidia/cu13/lib` (18 files), `site-packages/flashinfer_cubin/…/fmha/trtllm-gen` (4672 files) and 3 more |
+| 7 | 0.54 GB | 1.20 GB | 11891 | `/opt/vllm-source`, `/usr/lib64`, `site-packages/xgrammar` and 4 more |
+| 8 | 0.56 GB | 1.20 GB | 4444 | `site-packages/tokenspeed_triton`, `site-packages/nvidia/cu13/bin`, `site-packages/nvidia/cusparselt` and 6 more |
+| 9 | 0.37 GB | 1.20 GB | 14958 | `site-packages/tilelang`, two `flashinfer_jit_cache` kernels and 7 more |
+| 10 | 0.38 GB | 1.20 GB | 16726 | `/usr/local/cuda-13.0/bin`, `site-packages/nixl_cu12.libs` and 13 more |
+| 11 | 0.59 GB | 1.20 GB | 12604 | `/usr/local/bin`, `site-packages/z3` and 62 more |
+| 12 | 0.71 GB | 1.20 GB | 10209 | `flashinfer_jit_cache` prefill kernels, `site-packages/.nixl_cu12.mesonpy.libs` and 792 more |
+| 13 | 0.01 GB | 0.03 GB | 3070 | `site-packages/caio` and 441 small directories |
+
+(`site-packages` is `/opt/vllm/lib/python3.12/site-packages`.) The job's
+`layers.md` artifact carries the table of every build.
 
 ## How the router images are built
 
@@ -82,32 +188,49 @@ Renovate tracks the semver pins:
 
 - `LLM_D_ROUTER_VERSION` in both Dockerfiles
   (`llm-d/llm-d-inference-scheduler` GitHub releases).
-- The mirror-list entries in `.circleci/custom.yml` that carry a
-  `# registry:` hint above their `version:` line (org-wide regex manager,
-  docker datasource): the current `llm-d-cuda` pin and the two
-  latency-predictor pins. Each pin is the upstream tag verbatim, `v` prefix
-  included or not: the hint manager rewrites only the digits and leaves a
-  literal `v` in the pin alone, so the pin's shape has to match the
-  registry's. `llm-d-cuda` is tagged `v0.9.0` upstream and its pin keeps the
-  `v`; the latency-predictor images are tagged bare (`0.9.0`) and their pins
-  carry the bare tag.
+- The mirror-list and fast-image entries in `.circleci/custom.yml` that carry
+  a `# registry:` hint above their `version:` line (org-wide regex manager,
+  docker datasource): the current `llm-d-cuda` pin (its mirror and its
+  fast-image entries move together) and the two latency-predictor pins. Each
+  pin is the upstream tag verbatim, `v` prefix included or not: the hint
+  manager rewrites only the digits and leaves a literal `v` in the pin alone,
+  so the pin's shape has to match the registry's. `llm-d-cuda` is tagged
+  `v0.9.0` upstream and its pin keeps the `v`; the latency-predictor images
+  are tagged bare (`0.9.0`) and their pins carry the bare tag.
 
 The remaining mirror-list entries are held manually at exactly what the
 shipped kserve llmisvc presets reference and only move when
 giantswarm/kserve re-vendors the presets: the router `v0.9.0` pins (newer
-upstream router releases are already covered by the source builds) and
+upstream router releases are already covered by the source builds),
 `llm-d-uds-tokenizer` (upstream tags track the bundled vLLM version,
 `vllm-v*`, which is not semver and thus not parseable by the org-wide
-Renovate hint manager).
+Renovate hint manager) and the `llm-d-cuda:v0.8.0` mirror and fast-image
+entries.
 
 Releases are automatic: every merge to `main` is tagged with the next semver
 computed from Conventional Commits, and the tag pipeline builds and pushes the
-two router images and runs every mirror-list entry. Already-mirrored tags are
-skipped by digest comparison, so re-runs are cheap.
+two router images, runs every mirror-list entry and repacks every pinned
+`llm-d-cuda` tag into the fast variant. Already-mirrored tags are skipped by
+digest comparison and already-repacked ones by their recorded source digest,
+so re-runs are cheap.
 
 ## Local build
 
 ```bash
 docker build -f Dockerfile -t llm-d-router-endpoint-picker:dev .
 docker build -f Dockerfile.sidecar -t llm-d-router-disagg-sidecar:dev .
+```
+
+Repacking an image locally takes the same steps as the CI job (`crane`,
+`zstd`, `python3`):
+
+```bash
+crane pull --platform linux/amd64 ghcr.io/llm-d/llm-d-cuda:v0.8.0 src.tar
+crane config --platform linux/amd64 ghcr.io/llm-d/llm-d-cuda:v0.8.0 > config.json
+crane export - - < src.tar | python3 scripts/relayer.py plan -o plan.json
+crane export - - < src.tar | python3 scripts/relayer.py split --plan plan.json --config config.json \
+  --source-ref ghcr.io/llm-d/llm-d-cuda:v0.8.0 \
+  --source-digest "$(crane digest --platform linux/amd64 ghcr.io/llm-d/llm-d-cuda:v0.8.0)" \
+  --out layout --report report.json
+crane push layout <registry>/llm-d-fast/llm-d-cuda:v0.8.0
 ```
