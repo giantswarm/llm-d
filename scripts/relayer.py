@@ -40,6 +40,11 @@ import tarfile
 import time
 
 BLOCK = 512
+# The plan estimates each layer's tar footprint from its entries; the ancestor
+# directory entries `split` adds and the end-of-archive record padding are not
+# in the estimate, so the plan packs this much below the cap and the written
+# layers stay within it.
+TAR_OVERHEAD_RESERVE = 16 * 1024 * 1024
 ZSTD_LAYER = "application/vnd.oci.image.layer.v1.tar+zstd"
 OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
@@ -195,8 +200,9 @@ def cmd_plan(args):
     with open_stream(sys.stdin.buffer, "r|") as tin:
         for member in tin:
             tree.add(member)
-    items = cut(tree, "", args.max_layer_bytes)
-    bins = pack(items, args.max_layer_bytes)
+    budget = args.max_layer_bytes - TAR_OVERHEAD_RESERVE
+    items = cut(tree, "", budget)
+    bins = pack(items, budget)
 
     rules, overrides, groups = {}, {}, []
     for g, b in enumerate(bins):

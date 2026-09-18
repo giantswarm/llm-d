@@ -91,7 +91,7 @@ GPU becoming schedulable.
 — the same files with the same owners, modes, mtimes, symlinks, hardlinks
 and extended attributes, and the same image config (ENV, ENTRYPOINT, USER,
 WORKDIR, labels) — repacked into 14 layers of at most 1.2 GB uncompressed
-(0.09–0.84 GB compressed) and zstd-compressed
+(0.09–0.82 GB compressed) and zstd-compressed
 (`application/vnd.oci.image.layer.v1.tar+zstd`). containerd's parallel layer
 downloads (three at a time by default) now work on the bulk of the image,
 zstd decompresses three to five times faster than gzip per core, and the
@@ -147,24 +147,24 @@ mechanism on the real image.
 Source: 50 gzip layers, 8.80 GB compressed, largest 5.81 GB (then 1.51 GB,
 1.08 GB and 47 small ones). Repacked with `zstd -9` (level 12 costs 60 % more
 CPU for the same size; level 19 eleven times the CPU for 12 % fewer bytes):
-14 layers, 6.62 GB compressed for 15.63 GB of filesystem, largest 0.84 GB.
+14 layers, 6.62 GB compressed for 15.63 GB of filesystem, largest 0.82 GB.
 
 | Layer | Compressed | Uncompressed | Entries | Contents |
 |---|---|---|---|---|
-| 0 | 0.09 GB | 1.20 GB | 8795 | `site-packages/flashinfer_cubin/…/fmha/trtllm-gen` (8781 files), `site-packages/fastapi_cli`, `/afs` |
-| 1 | 0.81 GB | 1.20 GB | 12 | `site-packages/nvidia/cu13/lib` (8 files) and two small flashinfer directories |
-| 2 | 0.84 GB | 1.20 GB | 48 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (45 files), `site-packages/flashinfer_jit_cache/jit_cache/page` |
-| 3 | 0.45 GB | 1.20 GB | 12867 | `site-packages/torch`, `site-packages/lmcache` and 2 more |
-| 4 | 0.45 GB | 1.20 GB | 6235 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (26 files), `/usr/local/cuda-13.0/compat`, `/usr/lib` and 2 more |
-| 5 | 0.50 GB | 1.20 GB | 1468 | `site-packages/triton`, `site-packages/nvidia/cudnn`, `site-packages/numpy` and 3 more |
-| 6 | 0.32 GB | 1.20 GB | 4705 | `site-packages/nvidia/cu13/lib` (18 files), `site-packages/flashinfer_cubin/…/fmha/trtllm-gen` (4672 files) and 3 more |
-| 7 | 0.54 GB | 1.20 GB | 11891 | `/opt/vllm-source`, `/usr/lib64`, `site-packages/xgrammar` and 4 more |
-| 8 | 0.56 GB | 1.20 GB | 4444 | `site-packages/tokenspeed_triton`, `site-packages/nvidia/cu13/bin`, `site-packages/nvidia/cusparselt` and 6 more |
-| 9 | 0.37 GB | 1.20 GB | 14958 | `site-packages/tilelang`, two `flashinfer_jit_cache` kernels and 7 more |
-| 10 | 0.38 GB | 1.20 GB | 16726 | `/usr/local/cuda-13.0/bin`, `site-packages/nixl_cu12.libs` and 13 more |
-| 11 | 0.59 GB | 1.20 GB | 12604 | `/usr/local/bin`, `site-packages/z3` and 62 more |
-| 12 | 0.71 GB | 1.20 GB | 10209 | `flashinfer_jit_cache` prefill kernels, `site-packages/.nixl_cu12.mesonpy.libs` and 792 more |
-| 13 | 0.01 GB | 0.03 GB | 3070 | `site-packages/caio` and 441 small directories |
+| 0 | 0.09 GB | 1.18 GB | 8636 | `site-packages/flashinfer_cubin/…/fmha/trtllm-gen` (8635 files) |
+| 1 | 0.79 GB | 1.18 GB | 16 | `site-packages/nvidia/cu13/lib` (10 files), `site-packages/multipart` |
+| 2 | 0.82 GB | 1.18 GB | 58 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (47 files), `/afs` and 1 more |
+| 3 | 0.45 GB | 1.18 GB | 12323 | `site-packages/torch`, `site-packages/cupy_backends` and 1 more |
+| 4 | 0.47 GB | 1.18 GB | 130 | `/usr/local/cuda-13.0/targets/x86_64-linux/lib` (24 files), `/usr/local/cuda-13.0/compat`, `/opt/vllm/bin` and 2 more |
+| 5 | 0.64 GB | 1.18 GB | 122 | `site-packages/nvidia/cu13/lib` (16 files), `site-packages/nvidia/cudnn`, `site-packages/aiohttp` and 1 more |
+| 6 | 0.19 GB | 1.18 GB | 6187 | `site-packages/triton`, `site-packages/flashinfer_cubin/…` (4818 files), `site-packages/pycountry` and 2 more |
+| 7 | 0.52 GB | 1.18 GB | 11892 | `/opt/vllm-source`, `/usr/lib64`, `site-packages/xgrammar` and 2 more |
+| 8 | 0.57 GB | 1.18 GB | 737 | `site-packages/tokenspeed_triton`, `site-packages/nvidia/cu13/bin`, `site-packages/nvidia/cusparselt` and 6 more |
+| 9 | 0.38 GB | 1.18 GB | 12012 | `site-packages/tilelang`, two `flashinfer_jit_cache` kernels and 7 more |
+| 10 | 0.36 GB | 1.18 GB | 22423 | `/usr/local/cuda-13.0/bin`, `site-packages/nixl_cu12.libs` and 13 more |
+| 11 | 0.47 GB | 1.18 GB | 17417 | `/usr/bin`, `/usr/local/bin` and 46 more |
+| 12 | 0.77 GB | 1.18 GB | 10294 | `/opt/vllm/include`, `flashinfer_jit_cache` prefill kernels and 305 more |
+| 13 | 0.10 GB | 0.25 GB | 5785 | `site-packages/rpds` and 951 small directories |
 
 (`site-packages` is `/opt/vllm/lib/python3.12/site-packages`.) The job's
 `layers.md` artifact carries the table of every build.

@@ -209,9 +209,11 @@ jobs:
             set -euo pipefail
             cd "${WORK}"
 
-            # Every layer within the cap.
+            # Every layer within the cap, compressed and uncompressed.
             jq -e --argjson cap << parameters.max-layer-bytes >> \
-              '.largest_compressed <= $cap and ([.layers[].uncompressed] | max) <= $cap' report.json > /dev/null
+              '.largest_compressed <= $cap and ([.layers[].uncompressed] | max) <= $cap' report.json > /dev/null \
+              || { echo "a layer exceeds the cap of << parameters.max-layer-bytes >> bytes:"; \
+                   jq -c '.layers[] | {layer, compressed, uncompressed}' report.json; exit 1; }
 
             # The filesystem: the same entries with the same size, mode, owner,
             # mtime and link target. The root directory entry is the one thing
