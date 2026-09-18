@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `llm-d-cpu:v0.8.0`, the CPU build of the llm-d release the worker presets pin, mirrored
+  digest-identically next to `llm-d-cuda` (and copied under `llm-d-fast/`): the runtime a node without
+  an accelerator serves a small model on through the same well-known llmisvc templates.
+
 ### Fixed
 
 - The latency-predictor `v0.8.0` preset pins are mirror-list entries again (held, like the other preset
