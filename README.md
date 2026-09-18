@@ -16,6 +16,8 @@ resolves every referenced image. The same set exists once more under
 `gsoci.azurecr.io/giantswarm/llm-d-fast/`, with the model-server image
 repacked into small zstd layers so a GPU node pulls it in a fraction of the
 time — see [the fast-to-pull variant set](#the-fast-to-pull-variant-set-llm-d-fast).
+Every digest this repo publishes on gsoci carries a Giant Swarm signature —
+see [Signatures](#signatures).
 
 ## Artifacts on `gsoci.azurecr.io/giantswarm/`
 
@@ -169,6 +171,52 @@ CPU for the same size; level 19 eleven times the CPU for 12 % fewer bytes):
 (`site-packages` is `/opt/vllm/lib/python3.12/site-packages`.) The job's
 `layers.md` artifact carries the table of every build.
 
+## Signatures
+
+Every image digest this repository publishes on `gsoci.azurecr.io` carries a
+Giant Swarm signature. The source-built router images are signed by the
+architect orb as it builds them; every mirrored and repacked digest — under
+`giantswarm/` and under `giantswarm/llm-d-fast/` alike — is signed by the job
+that published it (the `sign-unsigned-digests` command in
+[`.circleci/custom.yml`](./.circleci/custom.yml)) through the orb's own
+`cosign-sign-verify` command. The signature is cosign keyless: a short-lived
+Fulcio certificate for the job's CircleCI OIDC identity, recorded in the
+public Rekor transparency log and stored as a Sigstore bundle next to the
+signed digest (cosign v3; a cosign v2 client reports "no signatures found" on
+a signed image).
+
+The identity is this repository's CircleCI pipeline definition:
+
+| | |
+|---|---|
+| Issuer | `https://oidc.circleci.com` |
+| Subject | `https://circleci.com/api/v2/projects/5167508b-085e-4c4a-8c97-78b292776457/pipeline-definitions/e03c450b-99d7-5703-b50a-d3a93d1d3f6c` |
+
+Every Giant Swarm CircleCI project signs with a subject of that shape, so one
+verifier admits everything built or mirrored by Giant Swarm's CI and nothing
+else: issuer `https://oidc.circleci.com` and a subject matching
+`^https://circleci\.com/api/v2/projects/[a-f0-9-]+/pipeline-definitions/[a-f0-9-]+$`
+(for Kyverno, a keyless attestor with that `issuer` and `subjectRegExp`). To
+verify one image:
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://oidc.circleci.com \
+  --certificate-identity-regexp '^https://circleci\.com/api/v2/projects/[a-f0-9-]+/pipeline-definitions/[a-f0-9-]+$' \
+  gsoci.azurecr.io/giantswarm/llm-d-cuda:v0.8.0
+```
+
+Pin `--certificate-identity` to the subject above instead of the pattern to
+accept this repository's pipeline only.
+
+Signing is idempotent: a job verifies each digest it published against the
+identity above and signs only what does not verify yet, so a re-run of the
+tag pipeline signs nothing twice and a digest that changed (a moved upstream
+tag, a fresh repack) is signed once. Every mirrored tag on gsoci is in the
+mirror list, so a tag run leaves no unsigned digest behind. A signature
+belongs to a repository: the `llm-d-fast/` copy of a mirror carries its own
+signature of the same digest.
+
 ## How the router images are built
 
 The two Go router images follow the giantswarm/kserve controller pattern: the
@@ -176,8 +224,9 @@ Dockerfile clones the upstream repository at the pinned release tag
 (`LLM_D_ROUTER_VERSION`) and cross-compiles a static binary for each target
 platform, replicating upstream's own `Dockerfile.epp` / `Dockerfile.sidecar`
 build (distroless static base, nonroot). Building from source rather than
-mirroring gives the images Giant Swarm provenance: cosign signature, SLSA
-provenance, and SBOM via the architect orb defaults.
+mirroring gives the images full Giant Swarm provenance: on top of the cosign
+signature every image here carries, SLSA provenance and an SBOM via the
+architect orb defaults.
 
 `llm-d-cuda` cannot practically be rebuilt (multi-hour CUDA/vLLM build), so it
 is mirrored digest-identically instead, as are the other preset-pinned images.
@@ -209,10 +258,11 @@ entries.
 
 Releases are automatic: every merge to `main` is tagged with the next semver
 computed from Conventional Commits, and the tag pipeline builds and pushes the
-two router images, runs every mirror-list entry and repacks every pinned
-`llm-d-cuda` tag into the fast variant. Already-mirrored tags are skipped by
-digest comparison and already-repacked ones by their recorded source digest,
-so re-runs are cheap.
+two router images, runs every mirror-list entry, repacks every pinned
+`llm-d-cuda` tag into the fast variant and signs every digest it published
+that does not verify yet. Already-mirrored tags are skipped by digest
+comparison, already-repacked ones by their recorded source digest and
+already-signed digests by verification, so re-runs are cheap.
 
 ## Local build
 
