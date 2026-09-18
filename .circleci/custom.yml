@@ -207,6 +207,7 @@ jobs:
           no_output_timeout: 30m
           command: |
             set -euo pipefail
+            REPO="$(pwd)"
             cd "${WORK}"
 
             # Every layer within the cap, compressed and uncompressed.
@@ -233,7 +234,7 @@ jobs:
             echo "config: identical"
 
             rm -f src.tar listing-source.txt listing-fast.txt
-            python3 scripts/relayer.py table --report report.json --source-manifest source-manifest.json | tee layers.md
+            python3 "${REPO}/scripts/relayer.py" table --report report.json --source-manifest source-manifest.json | tee layers.md
       - run:
           name: Smoke-run the repacked image from a local registry
           no_output_timeout: 30m
