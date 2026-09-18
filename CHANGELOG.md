@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The latency-predictor `v0.8.0` preset pins are mirror-list entries again (held, like the other preset
+  pins), so they exist under the `llm-d-fast/` prefix too and every preset-pinned image resolves there.
+
 ### Added
 
 - A fast-to-pull variant set under `gsoci.azurecr.io/giantswarm/llm-d-fast/`: `llm-d-cuda` repacked

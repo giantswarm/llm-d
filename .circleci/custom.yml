@@ -461,3 +461,29 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+
+      # Latency-predictor tags the shipped kserve llmisvc presets pin. Held
+      # manually, like the other preset pins: the Renovate-tracked entries
+      # above moved on to 0.9.0, and the mirror jobs only ever run for the
+      # pins listed here -- so these are what keep the preset-pinned tags in
+      # the llm-d-fast/ prefix (and re-runnable on gsoci).
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-latency-predictor-training-server-preset-pin
+          image: llm-d-latency-predictor-training-server
+          version: "v0.8.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-latency-predictor-prediction-server-preset-pin
+          image: llm-d-latency-predictor-prediction-server
+          version: "v0.8.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
