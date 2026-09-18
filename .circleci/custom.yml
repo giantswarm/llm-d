@@ -18,20 +18,102 @@
 #     fast-copy), except llm-d-cuda, which fast-image repacks into small
 #     zstd layers there. Pointing the presets' registry prefix at llm-d-fast/
 #     swaps the variant in without touching a tag.
+#   - the signature on every digest the two jobs above publish: cosign keyless
+#     under the job's CircleCI OIDC identity, through the architect orb's own
+#     cosign-sign-verify command, so a mirrored or repacked image verifies with
+#     the attestor that admits the images the orb builds (see the README).
 version: 2.1
+
+commands:
+  # Install a pinned cosign into a job whose image does not carry one (the
+  # skopeo image of mirror-image, the Ubuntu machine image of fast-image). The
+  # same cosign major the orb's architect executor signs with, so the
+  # signatures here have the shape of the orb's (v3: a Sigstore bundle stored as
+  # an OCI referrer of the signed digest).
+  install-cosign:
+    parameters:
+      version:
+        description: cosign release to install.
+        type: string
+        # repo: sigstore/cosign
+        default: "v3.1.3"
+    steps:
+      - run:
+          name: Install cosign << parameters.version >>
+          command: |
+            set -euo pipefail
+            RELEASE="https://github.com/sigstore/cosign/releases/download/<< parameters.version >>"
+            curl -fsSL "${RELEASE}/cosign-linux-amd64" -o /tmp/cosign
+            curl -fsSL "${RELEASE}/cosign_checksums.txt" \
+              | grep ' cosign-linux-amd64$' | sed 's#  .*#  /tmp/cosign#' | sha256sum -c -
+            SUDO=""
+            [ "$(id -u)" -eq 0 ] || SUDO=sudo
+            ${SUDO} install -m 0755 /tmp/cosign /usr/local/bin/cosign
+            rm -f /tmp/cosign
+            cosign version
+
+  # Sign every published reference the job recorded in the refs file (one
+  # gsoci.azurecr.io/<repository>@<digest> per line) that does not verify
+  # against the Giant Swarm CircleCI identity yet, through the architect orb's
+  # cosign-sign-verify command: the same command, token (this job's OIDC token,
+  # minted with audience sigstore and the root issuer), issuer and identity
+  # pattern the orb applies to the images it builds. A digest that already
+  # verifies is left alone, so a re-run signs nothing twice and the first run
+  # after a change is the sign-only pass over what is already on gsoci. cosign
+  # pushes the signature with the credentials the job's registry login wrote
+  # to $DOCKER_CONFIG/config.json.
+  sign-unsigned-digests:
+    parameters:
+      refs-file:
+        description: File with one gsoci.azurecr.io/<repository>@<digest> per line.
+        type: string
+        default: /tmp/.published_refs
+    steps:
+      - run:
+          name: Stage the published digests that carry no Giant Swarm signature yet
+          command: |
+            set -euo pipefail
+            : > /tmp/.cosign_refs
+            if [ ! -s "<< parameters.refs-file >>" ]; then
+              echo "No published references recorded; nothing to sign."
+              exit 0
+            fi
+            ISSUER_REGEX='^https://oidc\.circleci\.com'
+            IDENTITY_REGEX='^https://circleci\.com/api/v2/projects/[a-f0-9-]+/pipeline-definitions/[a-f0-9-]+$'
+            while IFS= read -r ref || [ -n "${ref}" ]; do
+              [ -n "${ref}" ] || continue
+              if out=$(cosign verify --certificate-oidc-issuer-regexp "${ISSUER_REGEX}" \
+                         --certificate-identity-regexp "${IDENTITY_REGEX}" "${ref}" 2>&1 >/dev/null); then
+                echo "${ref}: already signed by a Giant Swarm CircleCI pipeline; skipping."
+              elif printf '%s' "${out}" | grep -Eq 'no signatures found|no matching signatures'; then
+                echo "${ref}: unsigned; staged for signing."
+                echo "${ref}" >> /tmp/.cosign_refs
+              else
+                echo "${ref}: cosign verify failed for another reason:" >&2
+                printf '%s\n' "${out}" >&2
+                exit 1
+              fi
+            done < "<< parameters.refs-file >>"
+      - architect/cosign-sign-verify
 
 jobs:
   # Mirror ghcr.io/llm-d/<image>:<version> -> gsoci.azurecr.io/giantswarm/<image>:<version>
   # and, with fast-copy, -> gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>.
-  # Byte-identical (--preserve-digests, all platforms). Skipped when the
-  # destination already holds the same digest, so re-runs are cheap. Mirror
-  # jobs never delete: previously mirrored tags stay on gsoci after a pin
-  # moves on, so preset-pinned tags remain resolvable forever.
+  # Byte-identical (--preserve-digests, all platforms). The copy is skipped
+  # when the destination already holds the same digest, so re-runs are cheap;
+  # every destination digest is then signed unless it already is. Mirror jobs
+  # never delete: previously mirrored tags stay on gsoci after a pin moves on,
+  # so preset-pinned tags remain resolvable forever.
   mirror-image:
     docker:
       - image: gsoci.azurecr.io/giantswarm/skopeo:v1.22.2
     resource_class: small
     shell: /bin/bash
+    environment:
+      # One login serves skopeo (REGISTRY_AUTH_FILE) and cosign
+      # ($DOCKER_CONFIG/config.json): the same file, the same format.
+      DOCKER_CONFIG: /tmp/.registry-auth
+      REGISTRY_AUTH_FILE: /tmp/.registry-auth/config.json
     parameters:
       image:
         description: >
@@ -50,10 +132,12 @@ jobs:
         type: boolean
         default: true
     steps:
+      - install-cosign
       - run:
           name: Login to gsoci.azurecr.io
           command: |
             set -euo pipefail
+            mkdir -p "${DOCKER_CONFIG}"
             skopeo login \
               --username "${ACR_GSOCI_USERNAME}" \
               --password "${ACR_GSOCI_PASSWORD}" \
@@ -74,18 +158,28 @@ jobs:
             SRC_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${SRC}")
             echo "Source digest: ${SRC_DIGEST}"
 
+            # Every destination ends up in the refs file for signing, copied or
+            # already present.
+            : > /tmp/.published_refs
             for DEST in "${DESTS[@]}"; do
-              if DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}" 2>/dev/null); then
-                if [ "${DEST_DIGEST}" = "${SRC_DIGEST}" ]; then
-                  echo "${DEST} already at ${DEST_DIGEST}; nothing to do."
-                  continue
+              DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}" 2>/dev/null || true)
+              if [ "${DEST_DIGEST}" = "${SRC_DIGEST}" ]; then
+                echo "${DEST} already at ${DEST_DIGEST}; nothing to copy."
+              else
+                [ -z "${DEST_DIGEST}" ] || echo "${DEST} exists with a different digest (${DEST_DIGEST}); overwriting."
+                # Within one registry the blobs are mounted across repositories, so the
+                # second destination costs no transfer.
+                skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
+                DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}")
+                if [ "${DEST_DIGEST}" != "${SRC_DIGEST}" ]; then
+                  echo "${DEST} holds ${DEST_DIGEST} after the copy, not the source's ${SRC_DIGEST}" >&2
+                  exit 1
                 fi
-                echo "${DEST} exists with a different digest (${DEST_DIGEST}); overwriting."
               fi
-              # Within one registry the blobs are mounted across repositories, so the
-              # second destination costs no transfer.
-              skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
+              REPO="${DEST#docker://}"
+              echo "${REPO%:*}@${SRC_DIGEST}" >> /tmp/.published_refs
             done
+      - sign-unsigned-digests
 
   # Repack ghcr.io/llm-d/<image>:<version> into
   # gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>: the same
@@ -129,14 +223,17 @@ jobs:
         description: zstd compression level (decompression speed does not depend on it).
         type: integer
         default: 9
+      crane-version:
+        description: crane release (google/go-containerregistry) to install.
+        type: string
+        # repo: google/go-containerregistry
+        default: "v0.22.1"
     environment:
       SRC: ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>
       DEST: gsoci.azurecr.io/giantswarm/llm-d-fast/<< parameters.image >>:<< parameters.version >>
       LOCAL: 127.0.0.1:5000/llm-d-fast/<< parameters.image >>:<< parameters.version >>
       PLATFORM: << parameters.platform >>
       WORK: /home/circleci/fast-image
-      # renovate: datasource=github-releases depName=google/go-containerregistry
-      CRANE_VERSION: v0.22.1
       # The registry the smoke test pulls from; a plain OCI registry that serves zstd layers.
       ZOT_IMAGE: gsoci.azurecr.io/giantswarm/zot:v2.1.9
     steps:
@@ -147,28 +244,44 @@ jobs:
             set -euo pipefail
             df -h / | tail -1
             command -v zstd >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
-            RELEASE="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}"
+            RELEASE="https://github.com/google/go-containerregistry/releases/download/<< parameters.crane-version >>"
             curl -fsSL "${RELEASE}/go-containerregistry_Linux_x86_64.tar.gz" -o /tmp/crane.tgz
             curl -fsSL "${RELEASE}/checksums.txt" \
               | grep ' go-containerregistry_Linux_x86_64.tar.gz$' | sed 's#  .*#  /tmp/crane.tgz#' | sha256sum -c -
             sudo tar -C /usr/local/bin -xzf /tmp/crane.tgz crane
             crane version; zstd --version; python3 --version; docker --version; jq --version
             mkdir -p "${WORK}"
+      - install-cosign
       - when:
           condition: << parameters.push >>
           steps:
             - run:
-                name: Halt when << parameters.image >>:<< parameters.version >> is already repacked from the current source
+                name: Login to gsoci.azurecr.io
+                command: |
+                  set -euo pipefail
+                  printf '%s' "${ACR_GSOCI_PASSWORD}" \
+                    | crane auth login gsoci.azurecr.io --username "${ACR_GSOCI_USERNAME}" --password-stdin
+            # An already repacked destination is not rebuilt; its digest is still
+            # signed when it is not yet (the sign-only pass over what is on gsoci),
+            # and the job halts after that.
+            - run:
+                name: Record << parameters.image >>:<< parameters.version >> when it is already repacked from the current source
                 command: |
                   set -euo pipefail
                   SRC_DIGEST=$(crane digest --platform "${PLATFORM}" "${SRC}")
                   DEST_BASE=$(crane manifest "${DEST}" 2>/dev/null \
                     | jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' || true)
                   if [ "${DEST_BASE}" = "${SRC_DIGEST}" ]; then
-                    echo "${DEST} is already repacked from ${SRC_DIGEST}; nothing to do."
-                    circleci-agent step halt
+                    echo "${DEST} is already repacked from ${SRC_DIGEST}; only its signature is checked."
+                    echo "${DEST%:*}@$(crane digest "${DEST}")" > /tmp/.published_refs
+                    touch /tmp/.already_repacked
                   fi
                   echo "${DEST}: base ${DEST_BASE:-absent}, source ${SRC_DIGEST}"
+            - sign-unsigned-digests
+            - run:
+                name: Halt when << parameters.image >>:<< parameters.version >> was already repacked
+                command: |
+                  [ ! -f /tmp/.already_repacked ] || circleci-agent step halt
       - run:
           name: Pull the source image (<< parameters.platform >>)
           no_output_timeout: 30m
@@ -261,13 +374,14 @@ jobs:
                 command: |
                   set -euo pipefail
                   cd "${WORK}"
-                  printf '%s' "${ACR_GSOCI_PASSWORD}" \
-                    | crane auth login gsoci.azurecr.io --username "${ACR_GSOCI_USERNAME}" --password-stdin
                   crane push layout "${DEST}"
                   # The registry holds exactly the manifest that was built and verified.
                   cmp <(crane manifest "${DEST}" | jq -S .) \
                       <(jq -S . "layout/blobs/sha256/$(jq -r '.manifest_digest' report.json | cut -d: -f2)")
-                  echo "published ${DEST}@$(crane digest "${DEST}")"
+                  DIGEST=$(crane digest "${DEST}")
+                  echo "published ${DEST}@${DIGEST}"
+                  echo "${DEST%:*}@${DIGEST}" > /tmp/.published_refs
+            - sign-unsigned-digests
       - store_artifacts:
           path: /home/circleci/fast-image/plan.json
       - store_artifacts:
