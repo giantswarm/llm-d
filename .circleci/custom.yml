@@ -506,6 +506,23 @@ workflows:
             branches:
               ignore: /.*/
 
+      # The CPU build of the llm-d release the worker presets pin: the runtime
+      # a node without an accelerator serves a small model on through the same
+      # well-known llmisvc templates (a preset's template names it in place of
+      # llm-d-cuda). Held at the preset pin like llm-d-cuda above; upstream
+      # publishes it for amd64 only, and the copy under llm-d-fast/ keeps the
+      # prefix override complete.
+      - mirror-image:
+          context: architect
+          name: mirror-llm-d-cpu-preset-pin
+          image: llm-d-cpu
+          version: "v0.8.0"
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
       # Router tags the shipped kserve llmisvc presets pin. These byte-identical
       # upstream mirrors complement (not replace) the source-built
       # repo-versioned router images above: the presets reference the upstream

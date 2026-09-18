@@ -26,6 +26,7 @@ see [Signatures](#signatures).
 | `llm-d-router-endpoint-picker` | Endpoint picker (EPP), a.k.a. the inference scheduler: prefix-cache-aware, load-aware routing across model replicas | Built from [llm-d/llm-d-inference-scheduler](https://github.com/llm-d/llm-d-inference-scheduler) source ([`Dockerfile`](./Dockerfile), multi-arch amd64+arm64), plus a byte-identical mirror of the preset-pinned upstream tag |
 | `llm-d-router-disagg-sidecar` | P/D routing sidecar: routes requests between disaggregated prefill and decode workers | Built from [llm-d/llm-d-inference-scheduler](https://github.com/llm-d/llm-d-inference-scheduler) source ([`Dockerfile.sidecar`](./Dockerfile.sidecar), multi-arch amd64+arm64), plus a byte-identical mirror of the preset-pinned upstream tag |
 | `llm-d-cuda` | vLLM-based CUDA model server used by the llmisvc worker presets | Byte-identical mirrors of the pinned upstream tags (multi-hour CUDA build, not practically rebuildable) |
+| `llm-d-cpu` | The CPU build of the same vLLM-based model server, for a node without an accelerator (a lab, a small model on CPU capacity) through the same llmisvc templates | Byte-identical mirror of the preset-pinned upstream tag (amd64 only, as upstream publishes it) |
 | `llm-d-uds-tokenizer` | Tokenizer sidecar in the scheduler preset pod; the EPP talks to it over a Unix domain socket | Byte-identical mirror of the preset-pinned upstream tag |
 | `llm-d-latency-predictor-training-server` | Opt-in latency-predicted scheduling: training server | Byte-identical mirror of the pinned upstream tag |
 | `llm-d-latency-predictor-prediction-server` | Opt-in latency-predicted scheduling: prediction server | Byte-identical mirror of the pinned upstream tag |
@@ -48,6 +49,7 @@ upstream tag verbatim. Current tag set:
 | `llm-d-router-disagg-sidecar:v0.9.0` | `llm-d-router-disagg-sidecar:v0.9.0` | mirror (llmisvc preset pin) |
 | `llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0` | mirror (current, Renovate-tracked) |
 | `llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0` | mirror (llmisvc preset pin) |
+| `llm-d-cpu:v0.8.0` | `llm-d-cpu:v0.8.0` | mirror (llmisvc preset pin, CPU build) |
 | `llm-d-uds-tokenizer:vllm-v0.19.1` | `llm-d-uds-tokenizer:vllm-v0.19.1` | mirror (llmisvc preset pin) |
 | `llm-d-latency-predictor-training-server:0.9.0` | `llm-d-latency-predictor-training-server:0.9.0` | mirror (current, Renovate-tracked) |
 | `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (llmisvc preset pin) |
