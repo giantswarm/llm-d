@@ -106,7 +106,7 @@ jobs:
   # so preset-pinned tags remain resolvable forever.
   mirror-image:
     docker:
-      - image: gsoci.azurecr.io/giantswarm/skopeo:v1.22.2
+      - image: gsoci.azurecr.io/giantswarm/skopeo:v1.22.3
     resource_class: small
     shell: /bin/bash
     environment:
