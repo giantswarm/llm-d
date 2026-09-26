@@ -44,19 +44,22 @@ upstream tag verbatim. Current tag set:
 | gsoci tag | Upstream (`ghcr.io/llm-d/`) counterpart | Kind |
 |---|---|---|
 | `llm-d-router-endpoint-picker:<repo release>` | built from `llm-d-inference-scheduler` source at `LLM_D_ROUTER_VERSION` | source build |
-| `llm-d-router-endpoint-picker:v0.9.0` | `llm-d-router-endpoint-picker:v0.9.0` | mirror (llmisvc preset pin) |
+| `llm-d-router-endpoint-picker:v0.10.0` | `llm-d-router-endpoint-picker:v0.10.0` | mirror (llmisvc preset pin) |
+| `llm-d-router-endpoint-picker:v0.9.0` | `llm-d-router-endpoint-picker:v0.9.0` | mirror (earlier preset pin) |
 | `llm-d-router-disagg-sidecar:<repo release>` | built from `llm-d-inference-scheduler` source at `LLM_D_ROUTER_VERSION` | source build |
-| `llm-d-router-disagg-sidecar:v0.9.0` | `llm-d-router-disagg-sidecar:v0.9.0` | mirror (llmisvc preset pin) |
-| `llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0` | mirror (current, Renovate-tracked) |
-| `llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0` | mirror (llmisvc preset pin) |
-| `llm-d-cpu:v0.8.0` | `llm-d-cpu:v0.8.0` | mirror (llmisvc preset pin, CPU build) |
-| `llm-d-uds-tokenizer:vllm-v0.19.1` | `llm-d-uds-tokenizer:vllm-v0.19.1` | mirror (llmisvc preset pin) |
-| `llm-d-latency-predictor-training-server:0.9.0` | `llm-d-latency-predictor-training-server:0.9.0` | mirror (current, Renovate-tracked) |
-| `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (llmisvc preset pin) |
-| `llm-d-latency-predictor-prediction-server:0.9.0` | `llm-d-latency-predictor-prediction-server:0.9.0` | mirror (current, Renovate-tracked) |
-| `llm-d-latency-predictor-prediction-server:v0.8.0` | `llm-d-latency-predictor-prediction-server:v0.8.0` | mirror (llmisvc preset pin) |
-| `llm-d-fast/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | repacked variant (current, Renovate-tracked) |
-| `llm-d-fast/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | repacked variant (llmisvc preset pin) |
+| `llm-d-router-disagg-sidecar:v0.10.0` | `llm-d-router-disagg-sidecar:v0.10.0` | mirror (llmisvc preset pin) |
+| `llm-d-router-disagg-sidecar:v0.9.0` | `llm-d-router-disagg-sidecar:v0.9.0` | mirror (earlier preset pin) |
+| `llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0` | mirror (current, Renovate-tracked; llmisvc preset pin) |
+| `llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0` | mirror (earlier preset pin) |
+| `llm-d-cpu:v0.9.0` | `llm-d-cpu:v0.9.0` | mirror (llmisvc preset pin, CPU build) |
+| `llm-d-cpu:v0.8.0` | `llm-d-cpu:v0.8.0` | mirror (earlier preset pin, CPU build) |
+| `llm-d-uds-tokenizer:vllm-v0.19.1` | `llm-d-uds-tokenizer:vllm-v0.19.1` | mirror (earlier preset pin) |
+| `llm-d-latency-predictor-training-server:0.9.0` | `llm-d-latency-predictor-training-server:0.9.0` | mirror (current, Renovate-tracked; llmisvc preset pin) |
+| `llm-d-latency-predictor-training-server:v0.8.0` | `llm-d-latency-predictor-training-server:v0.8.0` | mirror (earlier preset pin) |
+| `llm-d-latency-predictor-prediction-server:0.9.0` | `llm-d-latency-predictor-prediction-server:0.9.0` | mirror (current, Renovate-tracked; llmisvc preset pin) |
+| `llm-d-latency-predictor-prediction-server:v0.8.0` | `llm-d-latency-predictor-prediction-server:v0.8.0` | mirror (earlier preset pin) |
+| `llm-d-fast/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | repacked variant (current, Renovate-tracked; llmisvc preset pin) |
+| `llm-d-fast/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | repacked variant (earlier preset pin) |
 | `llm-d-fast/<every other mirror row>` | as above | digest-identical copy of the mirror |
 
 A repacked variant's own digest changes with the compressor that built it;
@@ -69,7 +72,7 @@ Every repo release rebuilds the two router images from upstream source at the
 pinned `LLM_D_ROUTER_VERSION`, so the source-built gsoci tags map to upstream
 releases via that pin: gsoci `0.1.0` (and every later repo release until the
 pin moves) was built from upstream `v0.10.0`. The source-built images and the
-`v0.9.0` mirrors complement each other — the mirrors exist because the shipped
+`v0.10.0` mirrors complement each other — the mirrors exist because the shipped
 presets reference the upstream router tags verbatim.
 
 Note on upstream naming: the llm-d project renamed its router images. The old
