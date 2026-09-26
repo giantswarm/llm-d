@@ -488,7 +488,7 @@ workflows:
           context: architect
           name: mirror-llm-d-cuda-preset-pin
           image: llm-d-cuda
-          version: "v0.8.0"
+          version: "v0.9.0"
           fast-copy: false
           filters:
             tags:
@@ -499,7 +499,7 @@ workflows:
           context: architect
           name: fast-image-llm-d-cuda-preset-pin
           image: llm-d-cuda
-          version: "v0.8.0"
+          version: "v0.9.0"
           filters:
             tags:
               only: /^v.*/
@@ -516,7 +516,7 @@ workflows:
           context: architect
           name: mirror-llm-d-cpu-preset-pin
           image: llm-d-cpu
-          version: "v0.8.0"
+          version: "v0.9.0"
           filters:
             tags:
               only: /^v.*/
@@ -533,7 +533,7 @@ workflows:
           context: architect
           name: mirror-llm-d-router-disagg-sidecar-preset-pin
           image: llm-d-router-disagg-sidecar
-          version: "v0.9.0"
+          version: "v0.10.0"
           filters:
             tags:
               only: /^v.*/
@@ -543,7 +543,7 @@ workflows:
           context: architect
           name: mirror-llm-d-router-endpoint-picker-preset-pin
           image: llm-d-router-endpoint-picker
-          version: "v0.9.0"
+          version: "v0.10.0"
           filters:
             tags:
               only: /^v.*/
@@ -565,7 +565,7 @@ workflows:
               ignore: /.*/
 
       # Latency-predictor images for the opt-in llmisvc latency-predicted
-      # scheduling feature, Renovate-tracked. The shipped presets pin v0.8.0;
+      # scheduling feature, Renovate-tracked. The shipped presets pin 0.9.0;
       # once mirrored, that tag stays on gsoci even after the pin here moves.
       # Upstream tags these two images without a `v` prefix (0.9.0, 0.9, 0:
       # docker/metadata-action semver patterns in their release workflow), so
@@ -595,14 +595,14 @@ workflows:
 
       # Latency-predictor tags the shipped kserve llmisvc presets pin. Held
       # manually, like the other preset pins: the Renovate-tracked entries
-      # above moved on to 0.9.0, and the mirror jobs only ever run for the
+      # above move on with upstream, and the mirror jobs only ever run for the
       # pins listed here -- so these are what keep the preset-pinned tags in
       # the llm-d-fast/ prefix (and re-runnable on gsoci).
       - mirror-image:
           context: architect
           name: mirror-llm-d-latency-predictor-training-server-preset-pin
           image: llm-d-latency-predictor-training-server
-          version: "v0.8.0"
+          version: "0.9.0"
           filters:
             tags:
               only: /^v.*/
@@ -612,7 +612,7 @@ workflows:
           context: architect
           name: mirror-llm-d-latency-predictor-prediction-server-preset-pin
           image: llm-d-latency-predictor-prediction-server
-          version: "v0.8.0"
+          version: "0.9.0"
           filters:
             tags:
               only: /^v.*/
