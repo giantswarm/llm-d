@@ -3,7 +3,7 @@
 # Fetches upstream source at the pinned version and cross-compiles for the
 # target platform, following upstream's Dockerfile.epp.
 # renovate: datasource=github-releases depName=llm-d/llm-d-inference-scheduler
-ARG LLM_D_ROUTER_VERSION=v0.10.0
+ARG LLM_D_ROUTER_VERSION=v0.11.0
 
 FROM --platform=$BUILDPLATFORM golang:1.27.1 AS builder
 
