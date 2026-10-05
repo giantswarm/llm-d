@@ -407,7 +407,7 @@ jobs:
   lazy-image:
     machine:
       image: ubuntu-2404:current
-    resource_class: 2xlarge
+    resource_class: xlarge
     shell: /bin/bash
     parameters:
       image:
