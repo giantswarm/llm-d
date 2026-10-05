@@ -399,10 +399,11 @@ jobs:
   #   estargz: every layer re-encoded as eStargz, optimized by running the
   #            workload below in the image and recording what it reads; the
   #            stargz snapshotter mounts them lazily the same way.
-  # Both carry the same start-up set first: what scripts/startup-files.py
+  # eStargz carries the start-up set first: what scripts/startup-files.py
   # reads (torch, vLLM and its API server imported, every module and mapped
-  # library) -- SOCI as its prefetch artifact, eStargz as the prioritized
-  # files ahead of its landmark. Single-platform (GPU nodes are amd64). Every
+  # library), the prioritized files ahead of its landmark. The SOCI variant
+  # carries no prefetch artifact: building one for this image exhausts a
+  # 32 GB runner; its background fetcher fetches every layer after mounting. Single-platform (GPU nodes are amd64). Every
   # published digest is signed like the other jobs' (sign-unsigned-digests).
   lazy-image:
     machine:
@@ -498,7 +499,11 @@ jobs:
                   CTR="sudo ctr --address /run/containerd/containerd.sock --namespace lazy-image"
                   SOCI="sudo soci --address /run/containerd/containerd.sock --namespace lazy-image"
                   ${CTR} image pull --platform "${PLATFORM}" "${SRC}" > /dev/null
-                  ${SOCI} convert --platform "${PLATFORM}" --prefetch-files-json prefetch.json "${SRC}" "${DEST}"
+                  # Without the (experimental) prefetch artifact: with it, the
+                  # conversion of this image exhausts a 32 GB runner.
+                  /usr/bin/time -v ${SOCI} convert --platform "${PLATFORM}" "${SRC}" "${DEST}" 2> convert-time.txt \
+                    || { cat convert-time.txt; exit 1; }
+                  grep -E "Maximum resident|Elapsed" convert-time.txt
                   ${CTR} image export --all-platforms out.tar "${DEST}"
                   sudo chown "$(id -u)" out.tar
                   ${CTR} image rm "${SRC}" "${DEST}" > /dev/null
