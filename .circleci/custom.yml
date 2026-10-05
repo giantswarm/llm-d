@@ -389,6 +389,159 @@ jobs:
       - store_artifacts:
           path: /home/circleci/fast-image/layers.md
 
+  # Lazily pullable variants of gsoci.azurecr.io/giantswarm/<image>:<version>
+  # (the gzip mirror) for the lazy-pulling evaluation (giantswarm/agent-platform#801),
+  # under gsoci.azurecr.io/giantswarm/llm-d-<format>/<image>:<version>:
+  #   soci:    the mirror's layers unchanged plus a SOCI index manifest v2 (one
+  #            zTOC per layer over 10 MiB), bound to the image as a two-manifest
+  #            index; the SOCI snapshotter mounts the indexed layers over FUSE
+  #            and fetches their spans on demand.
+  #   estargz: every layer re-encoded as eStargz, optimized by running the
+  #            workload below in the image and recording what it reads; the
+  #            stargz snapshotter mounts them lazily the same way.
+  # Both carry the same start-up set first: what scripts/startup-files.py
+  # reads (torch, vLLM and its API server imported, every module and mapped
+  # library) -- SOCI as its prefetch artifact, eStargz as the prioritized
+  # files ahead of its landmark. Single-platform (GPU nodes are amd64). Every
+  # published digest is signed like the other jobs' (sign-unsigned-digests).
+  lazy-image:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: large
+    shell: /bin/bash
+    parameters:
+      image:
+        description: Image name under gsoci.azurecr.io/giantswarm/ (source) and llm-d-<format>/ (destination).
+        type: string
+      version:
+        description: Tag of the gzip mirror to convert.
+        type: string
+      format:
+        description: soci (index over the unchanged layers) or estargz (re-encoded layers).
+        type: enum
+        enum: [soci, estargz]
+      platform:
+        type: string
+        default: linux/amd64
+      soci-version:
+        type: string
+        # repo: awslabs/soci-snapshotter
+        default: "0.16.1"
+      stargz-version:
+        type: string
+        # repo: containerd/stargz-snapshotter
+        default: "v0.18.2"
+    environment:
+      SRC: gsoci.azurecr.io/giantswarm/<< parameters.image >>:<< parameters.version >>
+      DEST: gsoci.azurecr.io/giantswarm/llm-d-<< parameters.format >>/<< parameters.image >>:<< parameters.version >>
+      PLATFORM: << parameters.platform >>
+      WORK: /home/circleci/lazy-image
+      DOCKER_CONFIG: /home/circleci/.registry-auth
+      REGISTRY_AUTH_FILE: /home/circleci/.registry-auth/config.json
+    steps:
+      - checkout
+      - run:
+          name: Install skopeo, pigz and the << parameters.format >> tooling
+          command: |
+            set -euo pipefail
+            sudo apt-get update -qq && sudo apt-get install -y -qq skopeo pigz jq
+            mkdir -p "${WORK}" "${DOCKER_CONFIG}"
+            if [ "<< parameters.format >>" = soci ]; then
+              ASSET="soci-snapshotter-<< parameters.soci-version >>-linux-amd64-static.tar.gz"
+              RELEASE="https://github.com/awslabs/soci-snapshotter/releases/download/v<< parameters.soci-version >>"
+              BIN=soci
+            else
+              ASSET="stargz-snapshotter-<< parameters.stargz-version >>-linux-amd64.tar.gz"
+              RELEASE="https://github.com/containerd/stargz-snapshotter/releases/download/<< parameters.stargz-version >>"
+              BIN=ctr-remote
+            fi
+            curl -fsSL "${RELEASE}/${ASSET}" -o "/tmp/${ASSET}"
+            curl -fsSL "${RELEASE}/${ASSET}.sha256sum" | awk '{print $1"  /tmp/'"${ASSET}"'"}' | sha256sum -c -
+            sudo tar -C /usr/local/bin -xzf "/tmp/${ASSET}" "${BIN}"
+            "${BIN}" --version
+            skopeo --version
+            df -h / | tail -1
+      - install-cosign
+      - run:
+          name: Login to gsoci.azurecr.io
+          command: |
+            set -euo pipefail
+            skopeo login --username "${ACR_GSOCI_USERNAME}" --password-stdin gsoci.azurecr.io \
+              \<<< "${ACR_GSOCI_PASSWORD}"
+      - when:
+          condition:
+            equal: [soci, << parameters.format >>]
+          steps:
+            - run:
+                name: List the start-up files (scripts/startup-files.py in the image)
+                no_output_timeout: 30m
+                command: |
+                  set -euo pipefail
+                  docker pull --platform "${PLATFORM}" "${SRC}"
+                  docker run --rm --platform "${PLATFORM}" --entrypoint python3 \
+                    -v "${PWD}/scripts:/startup:ro" "${SRC}" /startup/startup-files.py > "${WORK}/prefetch.json"
+                  echo "$(jq length "${WORK}/prefetch.json") start-up files"
+                  docker rmi "${SRC}" > /dev/null
+            - run:
+                name: Convert to a SOCI index manifest v2 image
+                no_output_timeout: 45m
+                command: |
+                  set -euo pipefail
+                  cd "${WORK}"
+                  skopeo copy --retry-times 5 --override-os linux --override-arch amd64 \
+                    "docker://${SRC}" "oci:src:<< parameters.version >>"
+                  soci convert --standalone --format oci-dir \
+                    --prefetch-files-json prefetch.json src out
+                  jq . out/index.json
+                  rm -rf src
+                  df -h / | tail -1
+            - run:
+                name: Publish to gsoci.azurecr.io
+                no_output_timeout: 30m
+                command: |
+                  set -euo pipefail
+                  cd "${WORK}"
+                  skopeo copy --all --retry-times 5 oci:out "docker://${DEST}"
+                  DIGEST=$(skopeo inspect --raw "docker://${DEST}" | sha256sum | awk '{print "sha256:"$1}')
+                  skopeo inspect --raw "docker://${DEST}" | jq .
+                  echo "published ${DEST}@${DIGEST}"
+                  echo "${DEST%:*}@${DIGEST}" > /tmp/.published_refs
+      - when:
+          condition:
+            equal: [estargz, << parameters.format >>]
+          steps:
+            - run:
+                name: Convert to optimized eStargz, profiling scripts/startup-files.py in the image
+                no_output_timeout: 60m
+                command: |
+                  set -euo pipefail
+                  REPO="$(pwd)"
+                  cd "${WORK}"
+                  CTR="sudo ctr-remote --address /run/containerd/containerd.sock --namespace lazy-image"
+                  ${CTR} image pull --platform "${PLATFORM}" "${SRC}" > /dev/null
+                  ${CTR} image optimize --oci --platform "${PLATFORM}" --estargz-gzip-helper pigz \
+                    --period 300 --entrypoint '[ "python3" ]' --args '[ "/startup/startup-files.py" ]' \
+                    --mount "type=bind,src=${REPO}/scripts,dst=/startup,options=rbind:ro" \
+                    "${SRC}" "${DEST}"
+                  ${CTR} image export --platform "${PLATFORM}" out.tar "${DEST}"
+                  sudo chown "$(id -u)" out.tar
+                  ${CTR} image rm "${SRC}" "${DEST}" > /dev/null
+                  df -h / | tail -1
+            - run:
+                name: Publish to gsoci.azurecr.io
+                no_output_timeout: 30m
+                command: |
+                  set -euo pipefail
+                  cd "${WORK}"
+                  skopeo copy --all --retry-times 5 oci-archive:out.tar "docker://${DEST}"
+                  DIGEST=$(skopeo inspect --raw "docker://${DEST}" | sha256sum | awk '{print "sha256:"$1}')
+                  skopeo inspect --raw "docker://${DEST}" | jq -c '{mediaType, manifests: [.manifests[]? | {digest, platform}], layers: (.layers | length)}'
+                  echo "published ${DEST}@${DIGEST}"
+                  echo "${DEST%:*}@${DIGEST}" > /tmp/.published_refs
+      - sign-unsigned-digests
+      - store_artifacts:
+          path: /home/circleci/lazy-image/prefetch.json
+
 workflows:
   build:
     jobs:
@@ -618,3 +771,25 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+
+      # The lazy-pulling evaluation (giantswarm/agent-platform#801): the two
+      # lazily pullable variants of the runtime the presets run today,
+      # published from the evaluation branch only.
+      - lazy-image:
+          context: architect
+          name: lazy-image-soci-llm-d-cuda-preset-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
+          format: soci
+          filters:
+            branches:
+              only: eval-lazy-pull
+      - lazy-image:
+          context: architect
+          name: lazy-image-estargz-llm-d-cuda-preset-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
+          format: estargz
+          filters:
+            branches:
+              only: eval-lazy-pull
