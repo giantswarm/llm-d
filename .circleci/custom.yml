@@ -490,16 +490,18 @@ jobs:
             - run:
                 name: Convert to a SOCI index manifest v2 image
                 no_output_timeout: 45m
+                # Through the runner's containerd: the standalone mode buffers a
+                # layer in memory, and the image's largest is 5.8 GB.
                 command: |
                   set -euo pipefail
                   cd "${WORK}"
-                  skopeo copy --retry-times 5 --override-os linux --override-arch amd64 \
-                    "docker://${SRC}" "oci:src:<< parameters.version >>"
-                  df -h / | tail -1; free -g | head -2
-                  soci convert --standalone --format oci-dir \
-                    --prefetch-files-json prefetch.json src out
-                  jq . out/index.json
-                  rm -rf src
+                  CTR="sudo ctr --address /run/containerd/containerd.sock --namespace lazy-image"
+                  SOCI="sudo soci --address /run/containerd/containerd.sock --namespace lazy-image"
+                  ${CTR} image pull --platform "${PLATFORM}" "${SRC}" > /dev/null
+                  ${SOCI} convert --platform "${PLATFORM}" --prefetch-files-json prefetch.json "${SRC}" "${DEST}"
+                  ${CTR} image export --all-platforms out.tar "${DEST}"
+                  sudo chown "$(id -u)" out.tar
+                  ${CTR} image rm "${SRC}" "${DEST}" > /dev/null
                   df -h / | tail -1
             - run:
                 name: Publish to gsoci.azurecr.io
@@ -507,7 +509,7 @@ jobs:
                 command: |
                   set -euo pipefail
                   cd "${WORK}"
-                  skopeo copy --all --retry-times 5 oci:out "docker://${DEST}"
+                  skopeo copy --all --retry-times 5 oci-archive:out.tar "docker://${DEST}"
                   DIGEST=$(skopeo inspect --raw "docker://${DEST}" | sha256sum | awk '{print "sha256:"$1}')
                   skopeo inspect --raw "docker://${DEST}" | jq .
                   echo "published ${DEST}@${DIGEST}"
