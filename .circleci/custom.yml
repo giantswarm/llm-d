@@ -407,7 +407,7 @@ jobs:
   lazy-image:
     machine:
       image: ubuntu-2404:current
-    resource_class: large
+    resource_class: 2xlarge
     shell: /bin/bash
     parameters:
       image:
@@ -485,6 +485,8 @@ jobs:
                     /startup/startup-files.py /out/prefetch.json
                   echo "$(jq length "${WORK}/prefetch.json") start-up files"
                   docker rmi "${SRC}" > /dev/null
+                  docker system prune -af > /dev/null
+                  df -h / | tail -1; free -g | head -2
             - run:
                 name: Convert to a SOCI index manifest v2 image
                 no_output_timeout: 45m
@@ -493,6 +495,7 @@ jobs:
                   cd "${WORK}"
                   skopeo copy --retry-times 5 --override-os linux --override-arch amd64 \
                     "docker://${SRC}" "oci:src:<< parameters.version >>"
+                  df -h / | tail -1; free -g | head -2
                   soci convert --standalone --format oci-dir \
                     --prefetch-files-json prefetch.json src out
                   jq . out/index.json
