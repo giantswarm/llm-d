@@ -504,7 +504,7 @@ jobs:
                   /usr/bin/time -v ${SOCI} convert --platform "${PLATFORM}" "${SRC}" "${DEST}" 2> convert-time.txt \
                     || { cat convert-time.txt; exit 1; }
                   grep -E "Maximum resident|Elapsed" convert-time.txt
-                  ${CTR} image export --all-platforms out.tar "${DEST}"
+                  ${CTR} image export --platform "${PLATFORM}" out.tar "${DEST}"
                   sudo chown "$(id -u)" out.tar
                   ${CTR} image rm "${SRC}" "${DEST}" > /dev/null
                   df -h / | tail -1
