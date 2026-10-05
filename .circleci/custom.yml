@@ -479,7 +479,8 @@ jobs:
                   set -euo pipefail
                   docker pull --platform "${PLATFORM}" "${SRC}"
                   docker run --rm --platform "${PLATFORM}" --entrypoint python3 \
-                    -v "${PWD}/scripts:/startup:ro" "${SRC}" /startup/startup-files.py > "${WORK}/prefetch.json"
+                    -v "${PWD}/scripts:/startup:ro" -v "${WORK}:/out" "${SRC}" \
+                    /startup/startup-files.py /out/prefetch.json
                   echo "$(jq length "${WORK}/prefetch.json") start-up files"
                   docker rmi "${SRC}" > /dev/null
             - run:
@@ -520,7 +521,7 @@ jobs:
                   CTR="sudo ctr-remote --address /run/containerd/containerd.sock --namespace lazy-image"
                   ${CTR} image pull --platform "${PLATFORM}" "${SRC}" > /dev/null
                   ${CTR} image optimize --oci --platform "${PLATFORM}" --estargz-gzip-helper pigz \
-                    --period 300 --entrypoint '[ "python3" ]' --args '[ "/startup/startup-files.py" ]' \
+                    --period 300 --entrypoint '[ "python3" ]' --args '[ "/startup/startup-files.py", "/tmp/startup-files.json" ]' \
                     --mount "type=bind,src=${REPO}/scripts,dst=/startup,options=rbind:ro" \
                     "${SRC}" "${DEST}"
                   ${CTR} image export --platform "${PLATFORM}" out.tar "${DEST}"

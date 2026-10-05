@@ -1,4 +1,4 @@
-"""Print the files the model server reads to start, as a JSON array.
+"""Write the files the model server reads to start, as a JSON array, to argv[1].
 
 Run inside the llm-d-cuda image: imports what the server imports on its way
 to loading a model (torch, vLLM, its OpenAI API server) and lists every module
@@ -31,4 +31,7 @@ with open("/proc/self/maps") as maps:
             files.add(os.path.realpath(fields[5]))
 files.add(os.path.realpath(sys.executable))
 
-print(json.dumps(sorted(f for f in files if os.path.isfile(f)), indent=0))
+startup = sorted(f for f in files if os.path.isfile(f))
+with open(sys.argv[1], "w") as out:
+    json.dump(startup, out, indent=0)
+print(f"{len(startup)} start-up files", file=sys.stderr)
