@@ -498,15 +498,20 @@ jobs:
                   cd "${WORK}"
                   CTR="sudo ctr --address /run/containerd/containerd.sock --namespace lazy-image"
                   SOCI="sudo soci --address /run/containerd/containerd.sock --namespace lazy-image"
-                  ${CTR} image pull --platform "${PLATFORM}" "${SRC}" > /dev/null
+                  # The platform's manifest alone, by digest: converting the mirror's
+                  # index would carry its other platforms, which are not pulled.
+                  ONE="${SRC%:*}@$(skopeo inspect --raw "docker://${SRC}" \
+                    | jq -r --arg arch "${PLATFORM#*/}" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+                  echo "source ${ONE}"
+                  ${CTR} image pull --platform "${PLATFORM}" "${ONE}" > /dev/null
                   # Without the (experimental) prefetch artifact: with it, the
                   # conversion of this image exhausts a 32 GB runner.
-                  /usr/bin/time -v ${SOCI} convert --platform "${PLATFORM}" "${SRC}" "${DEST}" 2> convert-time.txt \
+                  /usr/bin/time -v ${SOCI} convert --platform "${PLATFORM}" "${ONE}" "${DEST}" 2> convert-time.txt \
                     || { cat convert-time.txt; exit 1; }
                   grep -E "Maximum resident|Elapsed" convert-time.txt
                   ${CTR} image export --platform "${PLATFORM}" out.tar "${DEST}"
                   sudo chown "$(id -u)" out.tar
-                  ${CTR} image rm "${SRC}" "${DEST}" > /dev/null
+                  ${CTR} image rm "${ONE}" "${DEST}" > /dev/null
                   df -h / | tail -1
             - run:
                 name: Publish to gsoci.azurecr.io
