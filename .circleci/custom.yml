@@ -478,6 +478,8 @@ jobs:
                 command: |
                   set -euo pipefail
                   docker pull --platform "${PLATFORM}" "${SRC}"
+                  # The image runs as a non-root user.
+                  chmod a+rwx "${WORK}"
                   docker run --rm --platform "${PLATFORM}" --entrypoint python3 \
                     -v "${PWD}/scripts:/startup:ro" -v "${WORK}:/out" "${SRC}" \
                     /startup/startup-files.py /out/prefetch.json
