@@ -292,9 +292,9 @@ jobs:
                   [ "<< parameters.dedupe >>" != "true" ] || VARIANT+=(--dedupe)
                   WANT_VARIANT=$(python3 scripts/relayer.py variant-id "${VARIANT[@]}")
                   DEST_MANIFEST=$(crane manifest "${DEST}" 2>/dev/null || echo '{}')
-                  DEST_BASE=$(jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' <<< "${DEST_MANIFEST}")
+                  DEST_BASE=$(jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' \<<< "${DEST_MANIFEST}")
                   # A repack from before the annotation existed is the plain fast variant.
-                  DEST_VARIANT=$(jq -r '.annotations["io.giantswarm.relayer.variant"] // "drop=none;dedupe=false"' <<< "${DEST_MANIFEST}")
+                  DEST_VARIANT=$(jq -r '.annotations["io.giantswarm.relayer.variant"] // "drop=none;dedupe=false"' \<<< "${DEST_MANIFEST}")
                   if [ "${DEST_BASE}" = "${SRC_DIGEST}" ] && [ "${DEST_VARIANT}" = "${WANT_VARIANT}" ]; then
                     echo "${DEST} is already repacked from ${SRC_DIGEST} as ${WANT_VARIANT}; only its signature is checked."
                     echo "${DEST%:*}@$(crane digest "${DEST}")" > /tmp/.published_refs
