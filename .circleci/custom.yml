@@ -13,11 +13,13 @@
 #     practically buildable from source here (the multi-GB CUDA model server)
 #     and the exact tags the shipped kserve llmisvc presets pin, so a
 #     registry-only override of the presets to gsoci resolves every image.
-#   - the fast-to-pull variant set under gsoci.azurecr.io/giantswarm/llm-d-fast/:
-#     every mirrored image once more under that prefix (mirror-image's
-#     fast-copy), except llm-d-cuda, which fast-image repacks into small
-#     zstd layers there. Pointing the presets' registry prefix at llm-d-fast/
-#     swaps the variant in without touching a tag.
+#   - the variant sets under gsoci.azurecr.io/giantswarm/llm-d-fast/ and
+#     llm-d-slim/: every mirrored image once more under each prefix
+#     (mirror-image's variant-copy), except llm-d-cuda, which fast-image
+#     repacks into small zstd layers there -- under llm-d-slim/ also without
+#     what the Ampere and Ada GPUs never load (scripts/slim-drop.txt) and with
+#     duplicate files as hardlinks. Pointing the presets' registry prefix at
+#     either swaps the variant in without touching a tag.
 #   - the signature on every digest the two jobs above publish: cosign keyless
 #     under the job's CircleCI OIDC identity, through the architect orb's own
 #     cosign-sign-verify command, so a mirrored or repacked image verifies with
@@ -98,7 +100,7 @@ commands:
 
 jobs:
   # Mirror ghcr.io/llm-d/<image>:<version> -> gsoci.azurecr.io/giantswarm/<image>:<version>
-  # and, with fast-copy, -> gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>.
+  # and, with variant-copy, -> gsoci.azurecr.io/giantswarm/llm-d-{fast,slim}/<image>:<version>.
   # Byte-identical (--preserve-digests, all platforms). The copy is skipped
   # when the destination already holds the same digest, so re-runs are cheap;
   # every destination digest is then signed unless it already is. Mirror jobs
@@ -123,12 +125,12 @@ jobs:
       version:
         description: Upstream tag to mirror.
         type: string
-      fast-copy:
+      variant-copy:
         description: >
-          Also copy the image into the gsoci.azurecr.io/giantswarm/llm-d-fast/
-          prefix, the fast-to-pull variant set: a registry prefix pointed there
-          has to resolve every image the presets reference. Off for the image
-          fast-image repacks under that prefix instead.
+          Also copy the image into the variant prefixes
+          gsoci.azurecr.io/giantswarm/llm-d-fast/ and llm-d-slim/: a registry
+          prefix pointed at either has to resolve every image the presets
+          reference. Off for the image fast-image repacks under them instead.
         type: boolean
         default: true
     steps:
@@ -151,8 +153,10 @@ jobs:
 
             SRC="docker://ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>"
             DESTS=("docker://gsoci.azurecr.io/giantswarm/<< parameters.image >>:<< parameters.version >>")
-            if [ "<< parameters.fast-copy >>" = "true" ]; then
-              DESTS+=("docker://gsoci.azurecr.io/giantswarm/llm-d-fast/<< parameters.image >>:<< parameters.version >>")
+            if [ "<< parameters.variant-copy >>" = "true" ]; then
+              for PREFIX in llm-d-fast llm-d-slim; do
+                DESTS+=("docker://gsoci.azurecr.io/giantswarm/${PREFIX}/<< parameters.image >>:<< parameters.version >>")
+              done
             fi
 
             SRC_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${SRC}")
@@ -168,7 +172,7 @@ jobs:
               else
                 [ -z "${DEST_DIGEST}" ] || echo "${DEST} exists with a different digest (${DEST_DIGEST}); overwriting."
                 # Within one registry the blobs are mounted across repositories, so the
-                # second destination costs no transfer.
+                # later destinations cost no transfer.
                 skopeo copy --all --preserve-digests --retry-times 5 "${SRC}" "${DEST}"
                 DEST_DIGEST=$(skopeo inspect --no-tags --format '{{.Digest}}' "${DEST}")
                 if [ "${DEST_DIGEST}" != "${SRC_DIGEST}" ]; then
@@ -182,13 +186,15 @@ jobs:
       - sign-unsigned-digests
 
   # Repack ghcr.io/llm-d/<image>:<version> into
-  # gsoci.azurecr.io/giantswarm/llm-d-fast/<image>:<version>: the same
+  # gsoci.azurecr.io/giantswarm/<prefix>/<image>:<version>: the same
   # filesystem and the same image config, cut into layers of at most
   # max-layer-bytes (uncompressed) and zstd-compressed, so a node's container
   # runtime pulls the bulk of the image on parallel streams and decompresses it
   # several times faster than gzip. Single-platform (GPU nodes are amd64); the
-  # byte-identical multi-platform mirror stays next to it. See scripts/relayer.py
-  # and the README for the mechanics.
+  # byte-identical multi-platform mirror stays next to it. With drop and
+  # dedupe (the llm-d-slim/ variant) the filesystem leaves out what the drop
+  # file names and holds each further copy of identical bytes as a hardlink.
+  # See scripts/relayer.py and the README for the mechanics.
   #
   # Idempotent like mirror-image: the manifest records the source platform
   # manifest's digest as org.opencontainers.image.base.digest, and the job
@@ -202,11 +208,24 @@ jobs:
     shell: /bin/bash
     parameters:
       image:
-        description: Image name under ghcr.io/llm-d/ (source) and gsoci.azurecr.io/giantswarm/llm-d-fast/ (destination).
+        description: Image name under ghcr.io/llm-d/ (source) and gsoci.azurecr.io/giantswarm/<prefix>/ (destination).
         type: string
       version:
         description: Upstream tag to repack.
         type: string
+      prefix:
+        description: The variant prefix under gsoci.azurecr.io/giantswarm/.
+        type: enum
+        enum: ["llm-d-fast", "llm-d-slim"]
+        default: llm-d-fast
+      drop:
+        description: A drop file of scripts/relayer.py (globs of what the variant leaves out); empty keeps everything.
+        type: string
+        default: ""
+      dedupe:
+        description: Write each further copy of identical bytes as a hardlink to the first.
+        type: boolean
+        default: false
       platform:
         description: The platform to repack; the variant is single-platform.
         type: string
@@ -230,8 +249,8 @@ jobs:
         default: "v0.22.1"
     environment:
       SRC: ghcr.io/llm-d/<< parameters.image >>:<< parameters.version >>
-      DEST: gsoci.azurecr.io/giantswarm/llm-d-fast/<< parameters.image >>:<< parameters.version >>
-      LOCAL: 127.0.0.1:5000/llm-d-fast/<< parameters.image >>:<< parameters.version >>
+      DEST: gsoci.azurecr.io/giantswarm/<< parameters.prefix >>/<< parameters.image >>:<< parameters.version >>
+      LOCAL: 127.0.0.1:5000/<< parameters.prefix >>/<< parameters.image >>:<< parameters.version >>
       PLATFORM: << parameters.platform >>
       WORK: /home/circleci/fast-image
       # The registry the smoke test pulls from; a plain OCI registry that serves zstd layers.
@@ -269,14 +288,19 @@ jobs:
                 command: |
                   set -euo pipefail
                   SRC_DIGEST=$(crane digest --platform "${PLATFORM}" "${SRC}")
-                  DEST_BASE=$(crane manifest "${DEST}" 2>/dev/null \
-                    | jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' || true)
-                  if [ "${DEST_BASE}" = "${SRC_DIGEST}" ]; then
-                    echo "${DEST} is already repacked from ${SRC_DIGEST}; only its signature is checked."
+                  VARIANT=(); [ -z "<< parameters.drop >>" ] || VARIANT+=(--drop "<< parameters.drop >>")
+                  [ "<< parameters.dedupe >>" != "true" ] || VARIANT+=(--dedupe)
+                  WANT_VARIANT=$(python3 scripts/relayer.py variant-id "${VARIANT[@]}")
+                  DEST_MANIFEST=$(crane manifest "${DEST}" 2>/dev/null || echo '{}')
+                  DEST_BASE=$(jq -r '.annotations["org.opencontainers.image.base.digest"] // empty' \<<< "${DEST_MANIFEST}")
+                  # A repack from before the annotation existed is the plain fast variant.
+                  DEST_VARIANT=$(jq -r '.annotations["io.giantswarm.relayer.variant"] // "drop=none;dedupe=false"' \<<< "${DEST_MANIFEST}")
+                  if [ "${DEST_BASE}" = "${SRC_DIGEST}" ] && [ "${DEST_VARIANT}" = "${WANT_VARIANT}" ]; then
+                    echo "${DEST} is already repacked from ${SRC_DIGEST} as ${WANT_VARIANT}; only its signature is checked."
                     echo "${DEST%:*}@$(crane digest "${DEST}")" > /tmp/.published_refs
                     touch /tmp/.already_repacked
                   fi
-                  echo "${DEST}: base ${DEST_BASE:-absent}, source ${SRC_DIGEST}"
+                  echo "${DEST}: base ${DEST_BASE:-absent} as ${DEST_VARIANT}, source ${SRC_DIGEST} as ${WANT_VARIANT}"
             - sign-unsigned-digests
             - run:
                 name: Halt when << parameters.image >>:<< parameters.version >> was already repacked
@@ -301,8 +325,12 @@ jobs:
           no_output_timeout: 30m
           command: |
             set -euo pipefail
+            VARIANT=()
+            [ -z "<< parameters.drop >>" ] || VARIANT+=(--drop "<< parameters.drop >>")
+            [ "<< parameters.dedupe >>" != "true" ] || VARIANT+=(--dedupe)
             crane export - - < "${WORK}/src.tar" \
-              | python3 scripts/relayer.py plan --max-layer-bytes << parameters.max-layer-bytes >> -o "${WORK}/plan.json"
+              | python3 scripts/relayer.py plan --max-layer-bytes << parameters.max-layer-bytes >> \
+                  "${VARIANT[@]}" -o "${WORK}/plan.json"
       - run:
           name: Repack into zstd layers
           no_output_timeout: 45m
@@ -329,24 +357,23 @@ jobs:
               || { echo "a layer exceeds the cap of << parameters.max-layer-bytes >> bytes:"; \
                    jq -c '.layers[] | {layer, compressed, uncompressed}' report.json; exit 1; }
 
-            # The filesystem: the same entries with the same size, mode, owner,
-            # mtime and link target. The root directory entry is the one thing
-            # the repacked layers do not carry (runtimes create the root); the
-            # trailing slash on directory names is the tar writer's spelling.
-            normalize() { awk '$6 != "." && $6 != "/"' | sed -E 's/ +/ /g; s#/$##' | LC_ALL=C sort -u; }
-            crane export - - < src.tar | tar -tv --full-time | normalize > listing-source.txt
-            for blob in $(jq -r '.layers[].digest' report.json); do
-              zstd -dc "layout/blobs/sha256/${blob#sha256:}" | tar -tv --full-time
-            done | normalize > listing-fast.txt
-            cmp listing-source.txt listing-fast.txt
-            echo "filesystem: $(wc -l < listing-fast.txt) entries identical"
+            # The filesystem: every entry of the source but the plan's dropped
+            # ones, each with the source's bytes (sha256), size, mode, owner,
+            # mtime and link target; a deduplicated entry as a hardlink to a
+            # file with its bytes. The root directory entry is the one thing
+            # the repacked layers do not carry (runtimes create the root).
+            crane export - - < src.tar | python3 "${REPO}/scripts/relayer.py" index -o index-source.json
+            python3 "${REPO}/scripts/relayer.py" index -o index-variant.json \
+              --zstd-layers $(jq -r '.layers[].digest | sub("sha256:"; "layout/blobs/sha256/")' report.json)
+            python3 "${REPO}/scripts/relayer.py" verify --plan plan.json \
+              --source-index index-source.json --variant-index index-variant.json
 
             # The config: everything but rootfs.diff_ids and history.
             CONFIG_BLOB="layout/blobs/sha256/$(jq -r '.config_digest' report.json | cut -d: -f2)"
             cmp <(jq -S 'del(.rootfs, .history)' "${CONFIG_BLOB}") <(jq -S 'del(.rootfs, .history)' config.json)
             echo "config: identical"
 
-            rm -f src.tar listing-source.txt listing-fast.txt
+            rm -f src.tar index-source.json index-variant.json
             python3 "${REPO}/scripts/relayer.py" table --report report.json --source-manifest source-manifest.json | tee layers.md
       - run:
           name: Smoke-run the repacked image from a local registry
@@ -361,8 +388,15 @@ jobs:
             for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/v2/ > /dev/null && break; sleep 1; done
             crane push layout "${LOCAL}"
             docker pull "${LOCAL}"
-            # Through the image's own entrypoint; the CPU-only import is what a GPU-less runner can prove.
-            docker run --rm "${LOCAL}" python3 -c 'import vllm, torch; print("vllm", vllm.__version__, "torch", torch.__version__)'
+            # Through the image's own entrypoint; the CPU-only imports are what a GPU-less runner can prove:
+            # the server, FlashInfer and its kernel packages, and FlashAttention 2 (its extension needs
+            # libcuda, which the image's forward-compatibility driver libraries provide without a GPU).
+            LD="/usr/local/cuda/compat:$(jq -r '.config.Env[] | select(startswith("LD_LIBRARY_PATH=")) | sub("LD_LIBRARY_PATH="; "")' config.json)"
+            docker run --rm -e LD_LIBRARY_PATH="${LD}" "${LOCAL}" python3 -c '
+            import torch, vllm, flashinfer, flashinfer_cubin, flashinfer_jit_cache, vllm.entrypoints.openai.api_server
+            from vllm.vllm_flash_attn import flash_attn_interface as fa
+            assert fa.FA2_AVAILABLE, fa.FA2_UNAVAILABLE_REASON
+            print("vllm", vllm.__version__, "torch", torch.__version__, "flashinfer", flashinfer.__version__)'
             docker rm -f zot > /dev/null
             df -h / | tail -1
       - when:
@@ -405,15 +439,29 @@ workflows:
               ignore:
                 - main
 
-      # Branches: repack the current llm-d-cuda pin without publishing. Proves
-      # the relayer on the real image on every PR, including the Renovate PR
-      # that moves the pin.
+      # Branches: repack the current llm-d-cuda pin into both variants without
+      # publishing. Proves the relayer on the real image on every PR, including
+      # the Renovate PR that moves the pin.
       - fast-image:
           context: architect
           name: build-fast-image
           image: llm-d-cuda
           # registry: ghcr.io/llm-d/llm-d-cuda
           version: "v0.9.0"
+          push: false
+          filters:
+            branches:
+              ignore:
+                - main
+      - fast-image:
+          context: architect
+          name: build-slim-image
+          image: llm-d-cuda
+          # registry: ghcr.io/llm-d/llm-d-cuda
+          version: "v0.9.0"
+          prefix: llm-d-slim
+          drop: scripts/slim-drop.txt
+          dedupe: true
           push: false
           filters:
             branches:
@@ -457,15 +505,15 @@ workflows:
       # the presets are re-vendored.
 
       # Current llm-d-cuda pin, Renovate-tracked. Upstream tags with a `v`
-      # prefix, so the pin keeps the literal `v`. No fast-copy: fast-image
-      # repacks this image under the llm-d-fast/ prefix.
+      # prefix, so the pin keeps the literal `v`. No variant-copy: fast-image
+      # repacks this image under the llm-d-fast/ and llm-d-slim/ prefixes.
       - mirror-image:
           context: architect
           name: mirror-llm-d-cuda
           image: llm-d-cuda
           # registry: ghcr.io/llm-d/llm-d-cuda
           version: "v0.9.0"
-          fast-copy: false
+          variant-copy: false
           filters:
             tags:
               only: /^v.*/
@@ -482,6 +530,22 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+      # The slim variant of the current pin, for the Ampere and Ada GPUs of the
+      # curated AWS families (scripts/slim-drop.txt); moves with the pin.
+      - fast-image:
+          context: architect
+          name: slim-image-llm-d-cuda
+          image: llm-d-cuda
+          # registry: ghcr.io/llm-d/llm-d-cuda
+          version: "v0.9.0"
+          prefix: llm-d-slim
+          drop: scripts/slim-drop.txt
+          dedupe: true
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
 
       # llm-d-cuda tag the shipped kserve llmisvc worker presets pin.
       - mirror-image:
@@ -489,7 +553,7 @@ workflows:
           name: mirror-llm-d-cuda-preset-pin
           image: llm-d-cuda
           version: "v0.9.0"
-          fast-copy: false
+          variant-copy: false
           filters:
             tags:
               only: /^v.*/
@@ -510,8 +574,8 @@ workflows:
       # a node without an accelerator serves a small model on through the same
       # well-known llmisvc templates (a preset's template names it in place of
       # llm-d-cuda). Held at the preset pin like llm-d-cuda above; upstream
-      # publishes it for amd64 only, and the copy under llm-d-fast/ keeps the
-      # prefix override complete.
+      # publishes it for amd64 only, and the copies under the variant prefixes
+      # keep the prefix override complete.
       - mirror-image:
           context: architect
           name: mirror-llm-d-cpu-preset-pin
@@ -597,7 +661,7 @@ workflows:
       # manually, like the other preset pins: the Renovate-tracked entries
       # above move on with upstream, and the mirror jobs only ever run for the
       # pins listed here -- so these are what keep the preset-pinned tags in
-      # the llm-d-fast/ prefix (and re-runnable on gsoci).
+      # the variant prefixes (and re-runnable on gsoci).
       - mirror-image:
           context: architect
           name: mirror-llm-d-latency-predictor-training-server-preset-pin

@@ -1,0 +1,53 @@
+# What the llm-d-slim/ variant of llm-d-cuda leaves out (scripts/relayer.py
+# plan --drop): one glob per line, matched against the path without the
+# leading slash; an entry goes when its path or an ancestor's matches.
+#
+# The slim variant serves the GPUs of the curated AWS families, Ampere and Ada
+# (A10G sm86, L4 and L40S sm89). What goes below is either built for one
+# Hopper or Blackwell architecture only, or a CUDA 12 build in a CUDA 13
+# image; vLLM and FlashInfer reach none of it on those GPUs, and every import
+# of it is optional. Hopper and Blackwell nodes keep the full image.
+
+# FlashInfer's prebuilt TRT-LLM-gen kernels (FMHA, batched GEMM, DeepGEMM),
+# sm90/sm100 only. The flashinfer_cubin package itself stays: vLLM and
+# FlashInfer read its presence as "the cubins are local" and would otherwise
+# probe NVIDIA's artifactory over the network before choosing a backend.
+opt/vllm/lib/python3.12/site-packages/flashinfer_cubin/cubins
+
+# FlashInfer's ahead-of-time compiled modules built for one Hopper or
+# Blackwell architecture (fused_moe_100, gemm_sm100, *_sm90, ...); the
+# architecture-generic modules beside them stay.
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*_sm9[0-9]*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*sm1[0-2][0-9]*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*_90
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*_90a
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*_1[0-2][0-9]
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/*_1[0-2][0-9][af]
+
+# FlashAttention 3, Hopper only; vLLM picks FlashAttention 2 below sm90.
+opt/vllm-source/vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so
+
+# The CUTLASS Python DSL (CuTe DSL): FlashAttention 4 and FlashInfer's CuTe DSL
+# kernels, Hopper and Blackwell only.
+opt/vllm/lib/python3.12/site-packages/nvidia_cutlass_dsl
+opt/vllm/lib/python3.12/site-packages/nvidia_cutlass_dsl*.dist-info
+opt/vllm/lib/python3.12/site-packages/nvidia_cutlass_dsl_packages.pth
+
+# TileLang: vLLM's mHC kernels for DeepSeek V4.
+opt/vllm/lib/python3.12/site-packages/tilelang
+opt/vllm/lib/python3.12/site-packages/tilelang-*.dist-info
+
+# TokenSpeed's MLA attention backend and the Triton fork it brings: MLA
+# models on Blackwell.
+opt/vllm/lib/python3.12/site-packages/tokenspeed_mla
+opt/vllm/lib/python3.12/site-packages/tokenspeed_mla-*.dist-info
+opt/vllm/lib/python3.12/site-packages/tokenspeed_triton
+opt/vllm/lib/python3.12/site-packages/tokenspeed_triton-*.dist-info
+
+# NIXL's CUDA 12 builds: nixl loads the build of torch's CUDA major, 13 here.
+opt/vllm/lib/python3.12/site-packages/nixl_cu12
+opt/vllm/lib/python3.12/site-packages/nixl_cu12-*.dist-info
+opt/vllm/lib/python3.12/site-packages/nixl_cu12.libs
+opt/vllm/lib/python3.12/site-packages/nixl_cu12.scripts
+opt/vllm/lib/python3.12/site-packages/.nixl_cu12.mesonpy.libs
+opt/vllm/lib/python3.12/site-packages/nixl_ep_cu12
