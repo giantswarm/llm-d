@@ -27,13 +27,23 @@ recorded for them) into every layer that holds something beneath them, so
 each layer applies cleanly on its own. The root directory entry is not
 carried: runtimes create the root themselves.
 
+The slim variant (``plan --drop FILE --dedupe``) leaves out what the drop
+file's patterns match -- an entry goes when its path or any ancestor's matches
+-- and writes every further copy of a byte-identical regular file as a hardlink
+to its first copy. ``split`` applies both from the plan, and ``index`` plus
+``verify`` prove the result against the source: the source's entries minus the
+dropped ones, each with the source's bytes and metadata, a deduplicated one as
+a hardlink to a file with its bytes.
+
 Only the standard library is used; ``zstd`` is called as a subprocess.
 """
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -86,6 +96,44 @@ def footprint(member):
 
 def open_stream(fileobj, mode, **kwargs):
     return tarfile.open(fileobj=fileobj, mode=mode, copybufsize=1 << 20, **kwargs)
+
+
+def sha256_member(tin, member):
+    h = hashlib.sha256()
+    f = tin.extractfile(member)
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
+    return h.hexdigest()
+
+
+def load_patterns(path):
+    """The drop file's patterns: one glob per line, '#' starts a comment."""
+    patterns = []
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                patterns.append(normalize(line))
+    return patterns
+
+
+class Dropper:
+    """Whether an entry goes: its path or an ancestor's matches a pattern."""
+
+    def __init__(self, patterns):
+        self.patterns = list(patterns)
+        self.regex = re.compile("|".join(fnmatch.translate(p) for p in self.patterns)) if self.patterns else None
+        self.cache = {}
+
+    def __call__(self, name):
+        if self.regex is None:
+            return False
+        hit = self.cache.get(name)
+        if hit is None:
+            p = parent(name)
+            hit = bool(p and self(p)) or bool(self.regex.match(name))
+            self.cache[name] = hit
+        return hit
 
 
 # ---------------------------------------------------------------- plan ----
@@ -197,8 +245,30 @@ def pack(items, cap):
 
 def cmd_plan(args):
     tree = Tree()
+    drop = Dropper(load_patterns(args.drop) if args.drop else [])
+    dropped = {"entries": 0, "bytes": 0}
+    first_copy = {}  # sha256 -> the first path with those bytes
+    links = {}  # path -> the path it becomes a hardlink to
     with open_stream(sys.stdin.buffer, "r|") as tin:
         for member in tin:
+            name = normalize(member.name)
+            if name and drop(name):
+                dropped["entries"] += 1
+                dropped["bytes"] += member.size if member.isreg() else 0
+                continue
+            if member.islnk():
+                target = normalize(member.linkname)
+                if drop(target):
+                    raise SystemExit(f"plan: {name!r} is a hardlink to the dropped {target!r}")
+                if target in links:
+                    # The target became a link itself: point at its first copy.
+                    links[name] = links[target]
+                    member.linkname = links[target]
+            elif args.dedupe and member.isreg() and member.size > 0:
+                first = first_copy.setdefault(sha256_member(tin, member), name)
+                if first != name:
+                    links[name] = first
+                    member.type, member.linkname, member.size = tarfile.LNKTYPE, first, 0
             tree.add(member)
     budget = args.max_layer_bytes - TAR_OVERHEAD_RESERVE
     items = cut(tree, "", budget)
@@ -239,6 +309,10 @@ def cmd_plan(args):
         "rules": rules,
         "overrides": overrides,
         "directories": tree.dir_meta,
+        "drop": drop.patterns,
+        "dedupe": args.dedupe,
+        "dropped": dropped,
+        "links": links,
     }
     with open(args.output, "w") as f:
         json.dump(plan, f, indent=1, sort_keys=True)
@@ -248,6 +322,12 @@ def cmd_plan(args):
         f"{len(tree.hardlinks)} hardlinks ({moved} moved to their target's layer)",
         file=sys.stderr,
     )
+    if drop.patterns or args.dedupe:
+        print(
+            f"  dropped {dropped['entries']} entries ({dropped['bytes']/1e9:.2f} GB) by {len(drop.patterns)} patterns; "
+            f"{len(links)} entries written as hardlinks to an identical file",
+            file=sys.stderr,
+        )
     for g, grp in enumerate(groups):
         top = ", ".join(i["path"] for i in grp["items"][:4])
         more = f" +{len(grp['items'])-4}" if len(grp["items"]) > 4 else ""
@@ -356,15 +436,19 @@ def cmd_split(args):
         for i in range(len(plan["groups"]))
     ]
     directories = plan["directories"]
+    drop = Dropper(plan.get("drop", []))
+    links = plan.get("links", {})
     started = time.monotonic()
 
     with open_stream(sys.stdin.buffer, "r|") as tin:
         for member in tin:
             name = normalize(member.name)
-            if not name:
+            if not name or drop(name):
                 continue
             member.name = name
-            if member.islnk():
+            if name in links:
+                member.type, member.linkname, member.size = tarfile.LNKTYPE, links[name], 0
+            elif member.islnk():
                 member.linkname = normalize(member.linkname)
             layer = layers[lookup(name, rules, overrides)]
             for a in ancestors(name)[1:]:
@@ -433,6 +517,7 @@ def cmd_split(args):
             "org.opencontainers.image.base.name": args.source_ref,
             "org.opencontainers.image.base.digest": args.source_digest,
             "org.opencontainers.image.created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            VARIANT_ANNOTATION: variant_id(plan),
         },
     }
     manifest_bytes = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
@@ -468,6 +553,8 @@ def cmd_split(args):
         "largest_compressed": max(r["compressed"] for r in report),
         "zstd_level": args.zstd_level,
         "seconds": round(elapsed, 1),
+        "dropped": plan.get("dropped", {"entries": 0, "bytes": 0}),
+        "hardlinked_duplicates": len(links),
     }
     with open(args.report, "w") as f:
         json.dump(summary, f, indent=1)
@@ -478,11 +565,112 @@ def cmd_split(args):
     )
 
 
+VARIANT_ANNOTATION = "io.giantswarm.relayer.variant"
+
+
+def variant_id(plan):
+    """What a variant leaves out and links, as the manifest records it: a repack
+    of the same source with another drop list or dedupe setting is another image."""
+    patterns = hashlib.sha256("\n".join(plan.get("drop", [])).encode()).hexdigest()[:16]
+    return f"drop={patterns if plan.get('drop') else 'none'};dedupe={str(plan.get('dedupe', False)).lower()}"
+
+
 def write_blob(blobs, data):
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     with open(os.path.join(blobs, digest.split(":")[1]), "wb") as f:
         f.write(data)
     return digest
+
+
+# ------------------------------------------------------- index, verify ----
+
+
+def index_stream(fileobj, entries):
+    """Record every entry of a tar stream: type, size, sha256, metadata, link."""
+    with open_stream(fileobj, "r|") as tin:
+        for member in tin:
+            name = normalize(member.name)
+            if not name:
+                continue
+            entries[name] = {
+                "type": member.type.decode(),
+                "size": member.size if member.isreg() else 0,
+                "sha256": sha256_member(tin, member) if member.isreg() else "",
+                "mode": member.mode,
+                "uid": member.uid,
+                "gid": member.gid,
+                "mtime": int(member.mtime),
+                "link": normalize(member.linkname) if member.islnk() else member.linkname,
+            }
+
+
+def cmd_index(args):
+    entries = {}
+    if args.zstd_layers:
+        # A layer re-emits its ancestors' directory entries with the same
+        # metadata, so the later layers' records of them are identical.
+        for path in args.zstd_layers:
+            proc = subprocess.Popen(["zstd", "-dcq", path], stdout=subprocess.PIPE)
+            index_stream(proc.stdout, entries)
+            proc.stdout.close()
+            if proc.wait() != 0:
+                raise SystemExit(f"index: zstd failed on {path}")
+    else:
+        index_stream(sys.stdin.buffer, entries)
+    with open(args.output, "w") as f:
+        json.dump(entries, f, sort_keys=True)
+    print(f"index: {len(entries)} entries", file=sys.stderr)
+
+
+def content(entries, name):
+    """The sha256 of a regular file or of the file a hardlink resolves to."""
+    seen = set()
+    while entries[name]["type"] == tarfile.LNKTYPE.decode():
+        if name in seen:
+            raise ValueError(f"hardlink loop at {name!r}")
+        seen.add(name)
+        name = entries[name]["link"]
+    return entries[name]["sha256"]
+
+
+def cmd_verify(args):
+    """The variant is the source minus the plan's drops, deduplicated by its links."""
+    with open(args.plan) as f:
+        plan = json.load(f)
+    with open(args.source_index) as f:
+        source = json.load(f)
+    with open(args.variant_index) as f:
+        variant = json.load(f)
+    drop = Dropper(plan.get("drop", []))
+    links = plan.get("links", {})
+
+    expected = {n for n in source if not drop(n)}
+    problems = [f"missing: {n}" for n in sorted(expected - variant.keys())]
+    problems += [f"unexpected: {n}" for n in sorted(variant.keys() - expected)]
+    for name in sorted(expected & variant.keys()):
+        src, var = source[name], variant[name]
+        if name in links:
+            if var["type"] != tarfile.LNKTYPE.decode() or var["link"] != links[name]:
+                problems.append(f"{name}: not a hardlink to {links[name]}")
+            elif content(source, name) != content(source, links[name]):
+                problems.append(f"{name}: different bytes than {links[name]} in the source")
+        elif src != var:
+            diff = {k: (src[k], var[k]) for k in src if src[k] != var.get(k)}
+            problems.append(f"{name}: {diff}")
+    for p in problems[:50]:
+        print(f"verify: {p}", file=sys.stderr)
+    if problems:
+        raise SystemExit(f"verify: {len(problems)} differences")
+
+    kept = sum(source[n]["size"] for n in expected)
+    deduplicated = sum(source[n]["size"] for n in links if source[n]["type"] != tarfile.LNKTYPE.decode())
+    print(
+        f"verify: {len(variant)} entries are the source's {len(source)} minus {len(source) - len(expected)} dropped, "
+        f"{len(links)} of them hardlinks to an identical file; "
+        f"{kept/1e9:.2f} GB of files kept of {sum(e['size'] for e in source.values())/1e9:.2f} GB, "
+        f"{(kept - deduplicated)/1e9:.2f} GB stored",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------- table ----
@@ -540,6 +728,8 @@ def main():
     p = sub.add_parser("plan", help="size the stream on stdin and write the layer plan")
     p.add_argument("--max-layer-bytes", type=int, default=1_200_000_000, help="uncompressed cap per layer")
     p.add_argument("-o", "--output", required=True, help="plan JSON to write")
+    p.add_argument("--drop", help="file of globs: an entry whose path or an ancestor's matches one is left out")
+    p.add_argument("--dedupe", action="store_true", help="write each further copy of identical bytes as a hardlink")
     p.set_defaults(func=cmd_plan)
 
     s = sub.add_parser("split", help="repack the stream on stdin into an OCI layout under --out")
@@ -552,6 +742,22 @@ def main():
     s.add_argument("--zstd-level", type=int, default=9)
     s.add_argument("--zstd-threads", type=int, default=2)
     s.set_defaults(func=cmd_split)
+
+    w = sub.add_parser("variant-id", help="print the variant annotation a plan with these options records")
+    w.add_argument("--drop")
+    w.add_argument("--dedupe", action="store_true")
+    w.set_defaults(func=lambda a: print(variant_id({"drop": load_patterns(a.drop) if a.drop else [], "dedupe": a.dedupe})))
+
+    i = sub.add_parser("index", help="record every entry of the stream on stdin (or of zstd layers) as JSON")
+    i.add_argument("-o", "--output", required=True)
+    i.add_argument("--zstd-layers", nargs="*", help="zstd-compressed tar layers to read in order instead of stdin")
+    i.set_defaults(func=cmd_index)
+
+    v = sub.add_parser("verify", help="check a variant's index against the source's under a plan")
+    v.add_argument("--plan", required=True)
+    v.add_argument("--source-index", required=True)
+    v.add_argument("--variant-index", required=True)
+    v.set_defaults(func=cmd_verify)
 
     t = sub.add_parser("table", help="print a Markdown layer table from a split report")
     t.add_argument("--report", required=True)

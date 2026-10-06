@@ -16,6 +16,9 @@ resolves every referenced image. The same set exists once more under
 `gsoci.azurecr.io/giantswarm/llm-d-fast/`, with the model-server image
 repacked into small zstd layers so a GPU node pulls it in a fraction of the
 time — see [the fast-to-pull variant set](#the-fast-to-pull-variant-set-llm-d-fast).
+A third set under `gsoci.azurecr.io/giantswarm/llm-d-slim/` carries a
+model-server image a third smaller still, for the Ampere and Ada GPUs of the
+curated AWS families — see [the slim variant set](#the-slim-variant-set-llm-d-slim).
 Every digest this repo publishes on gsoci carries a Giant Swarm signature —
 see [Signatures](#signatures).
 
@@ -61,6 +64,8 @@ upstream tag verbatim. Current tag set:
 | `llm-d-fast/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | repacked variant (current, Renovate-tracked; llmisvc preset pin) |
 | `llm-d-fast/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | repacked variant (earlier preset pin) |
 | `llm-d-fast/<every other mirror row>` | as above | digest-identical copy of the mirror |
+| `llm-d-slim/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | slim repacked variant (current, Renovate-tracked; Ampere and Ada GPUs) |
+| `llm-d-slim/<every other mirror row>` | as above | digest-identical copy of the mirror |
 
 A repacked variant's own digest changes with the compressor that built it;
 the source it was repacked from is recorded in its manifest as
@@ -136,18 +141,20 @@ once, whiteouts already applied — so the 15 GB filesystem is never stored:
 The CircleCI job `fast-image` ([`.circleci/custom.yml`](./.circleci/custom.yml))
 runs on every release tag for each pinned `llm-d-cuda` tag, pulling the
 source from `ghcr.io/llm-d/` (the same digest the mirror carries). Before
-anything is published it verifies the result against the source: the sorted
-`tar -tv` listing of the source filesystem equals the union of the layers'
-listings (108,032 entries for v0.8.0 — sizes, modes, owners, mtimes and link
-targets), the config minus `rootfs`/`history` is identical, every layer is
-within the cap, and the image runs — pushed to a local registry, pulled by
-Docker and started through its own entrypoint with `python3 -c 'import vllm,
-torch'`. It then publishes with `crane push` and checks that the registry
-holds exactly the manifest it built. The job is idempotent: it halts when the
-destination's `base.digest` annotation already names the current source
-platform manifest. On branches the same job runs with `push: false`, so
-every PR — including the Renovate PR that moves the pin — proves the
-mechanism on the real image.
+anything is published it verifies the result against the source
+(`relayer.py index` on both, then `relayer.py verify`): every entry of the
+source filesystem is in the layers with the same bytes (sha256), size, mode,
+owner, mtime and link target (107,855 entries for v0.9.0), the config minus
+`rootfs`/`history` is identical, every layer is within the cap, and the image
+runs — pushed to a local registry, pulled by Docker and started through its
+own entrypoint, importing vLLM, its OpenAI server, FlashInfer with its kernel
+packages and FlashAttention 2. It then publishes with `crane push` and checks
+that the registry holds exactly the manifest it built. The job is idempotent:
+it halts when the destination's `base.digest` annotation already names the
+current source platform manifest and its `io.giantswarm.relayer.variant`
+annotation the variant being built. On branches the same job runs with
+`push: false`, so every PR — including the Renovate PR that moves the pin —
+proves the mechanism on the real image.
 
 ### Layers of `llm-d-fast/llm-d-cuda:v0.8.0` (linux/amd64)
 
@@ -175,6 +182,42 @@ CPU for the same size; level 19 eleven times the CPU for 12 % fewer bytes):
 
 (`site-packages` is `/opt/vllm/lib/python3.12/site-packages`.) The job's
 `layers.md` artifact carries the table of every build.
+
+## The slim variant set: `llm-d-slim/`
+
+On a new GPU node the runtime image's layers are downloaded while the node
+joins, but they are unpacked only once the GPU is usable, beside the model's
+weight download. That unpack writes the whole filesystem, so its duration
+follows the image's unpacked size: about 80 s for the 15.6 GB of
+`llm-d-fast/llm-d-cuda:v0.9.0` on a 4-vCPU `g6.xlarge`, and 116 s beside the
+weight download.
+
+`gsoci.azurecr.io/giantswarm/llm-d-slim/llm-d-cuda:<tag>` is the
+`llm-d-fast/` repack of the same source with two differences:
+
+- It leaves out what the GPUs of the curated AWS families — Ampere and Ada
+  (A10G, L4, L40S) — never load. That is whatever was built for one Hopper
+  or Blackwell architecture only (FlashInfer's TRT-LLM-gen cubins and its
+  sm90+ ahead-of-time modules, FlashAttention 3, the CuTe DSL, TileLang and
+  TokenSpeed's MLA backend), plus NIXL's CUDA 12 build in a CUDA 13 image.
+  [`scripts/slim-drop.txt`](./scripts/slim-drop.txt) lists each pattern with
+  its reason. Every import of these packages is optional in vLLM and
+  FlashInfer. The `flashinfer_cubin` package stays without its cubins, so
+  both still take the cubins as local and probe no network before choosing
+  a backend.
+- Every further copy of a file's bytes is a hardlink to its first copy. The
+  CUDA toolkit's libraries under `/usr/local/cuda-13.0` and the `nvidia-*`
+  wheels' copies are the same files. Every path stays, so nothing that
+  loads a library by path changes.
+
+For v0.9.0 that is 10.58 GB of filesystem instead of 16.00 GB: 4.01 GB
+left out (25,188 entries), 7,580 files as hardlinks. The image is 5.25 GB of
+zstd layers instead of 6.62 GB, in 10 layers of at most 0.82 GB. The verify
+step proves that every remaining path carries the source's bytes and
+metadata. Hopper and Blackwell nodes keep `llm-d-fast/` or the mirror. The
+other images of the mirror set are copied digest-identically under
+`llm-d-slim/` as well, so `kserve.llmisvcConfigs.imageRegistry:
+gsoci.azurecr.io/giantswarm/llm-d-slim/` swaps the variant in.
 
 ## Signatures
 
