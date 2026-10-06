@@ -65,6 +65,7 @@ upstream tag verbatim. Current tag set:
 | `llm-d-fast/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | repacked variant (earlier preset pin) |
 | `llm-d-fast/<every other mirror row>` | as above | digest-identical copy of the mirror |
 | `llm-d-slim/llm-d-cuda:v0.9.0` | `llm-d-cuda:v0.9.0`, linux/amd64 manifest `sha256:e3a83aa57397c4d5d6a3318e4bcb236bb98a636b053e84989d005fae9ace0b9a` | slim repacked variant (current, Renovate-tracked; Ampere and Ada GPUs) |
+| `llm-d-slim/llm-d-cuda:v0.8.0` | `llm-d-cuda:v0.8.0`, linux/amd64 manifest `sha256:3bfec54270e3cb58891a0fa8fc4e88108408615a2ad9f1725ead172d8dbd6e0f` | slim repacked variant (the agent platform's pin) |
 | `llm-d-slim/<every other mirror row>` | as above | digest-identical copy of the mirror |
 
 A repacked variant's own digest changes with the compressor that built it;

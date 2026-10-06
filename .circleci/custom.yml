@@ -468,6 +468,23 @@ workflows:
               ignore:
                 - main
 
+      # Branches: the slim variant of the llm-d-cuda tag the agent platform's
+      # well-known configs pin (giantswarm/agent-platform), so a PR proves the
+      # drop list on the image the platform serves today as well.
+      - fast-image:
+          context: architect
+          name: build-slim-image-platform-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
+          prefix: llm-d-slim
+          drop: scripts/slim-drop.txt
+          dedupe: true
+          push: false
+          filters:
+            branches:
+              ignore:
+                - main
+
       # Tag builds: push the multi-arch sidecar image to gsoci + gsociprivate.
       - architect/push-to-registries:
           context: architect
@@ -538,6 +555,22 @@ workflows:
           image: llm-d-cuda
           # registry: ghcr.io/llm-d/llm-d-cuda
           version: "v0.9.0"
+          prefix: llm-d-slim
+          drop: scripts/slim-drop.txt
+          dedupe: true
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # The slim variant of the llm-d-cuda tag the agent platform's well-known
+      # configs pin; held manually, it moves when the platform's pin does.
+      - fast-image:
+          context: architect
+          name: slim-image-llm-d-cuda-platform-pin
+          image: llm-d-cuda
+          version: "v0.8.0"
           prefix: llm-d-slim
           drop: scripts/slim-drop.txt
           dedupe: true
