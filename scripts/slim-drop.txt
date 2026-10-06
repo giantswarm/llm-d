@@ -51,3 +51,26 @@ opt/vllm/lib/python3.12/site-packages/nixl_cu12.libs
 opt/vllm/lib/python3.12/site-packages/nixl_cu12.scripts
 opt/vllm/lib/python3.12/site-packages/.nixl_cu12.mesonpy.libs
 opt/vllm/lib/python3.12/site-packages/nixl_ep_cu12
+
+# FlashInfer's ahead-of-time attention modules (prefill, decode, the batch
+# attention and XQA kernels). vLLM attends with FlashAttention 2 on Ampere
+# and Ada and loads none of them; FlashInfer compiles one on demand with the
+# toolkit that stays in the image should a backend choice reach it.
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/batch_prefill_*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/single_prefill_*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/batch_decode_*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/single_decode_*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/batch_attention*
+opt/vllm/lib/python3.12/site-packages/flashinfer_jit_cache/jit_cache/xqa_input_*
+
+# The system CUDA toolkit's cuBLAS, cuBLASLt and NPP and its static archives:
+# torch and vLLM load the nvidia-* wheels' libraries, and nothing links
+# statically at runtime.
+usr/local/cuda-13.0/targets/x86_64-linux/lib/libcublas.so*
+usr/local/cuda-13.0/targets/x86_64-linux/lib/libcublasLt.so*
+usr/local/cuda-13.0/targets/x86_64-linux/lib/libnpp*
+usr/local/cuda-13.0/targets/x86_64-linux/lib/*_static.a
+
+# The system NCCL: torch loads the nvidia-nccl wheel's.
+usr/lib64/libnccl.so*
+usr/lib64/libnccl_static.a

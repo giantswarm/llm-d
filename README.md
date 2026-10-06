@@ -201,6 +201,12 @@ weight download.
   or Blackwell architecture only (FlashInfer's TRT-LLM-gen cubins and its
   sm90+ ahead-of-time modules, FlashAttention 3, the CuTe DSL, TileLang and
   TokenSpeed's MLA backend), plus NIXL's CUDA 12 build in a CUDA 13 image.
+  It also leaves out what no serving preset loads on those GPUs, as the
+  memory maps of every preset's serving processes show: FlashInfer's
+  ahead-of-time attention modules (vLLM attends with FlashAttention 2 there;
+  FlashInfer would compile one on demand), and the system CUDA toolkit's
+  cuBLAS, cuBLASLt, NPP, static archives and the system NCCL (torch and vLLM
+  load the `nvidia-*` wheels' libraries).
   [`scripts/slim-drop.txt`](./scripts/slim-drop.txt) lists each pattern with
   its reason. Every import of these packages is optional in vLLM and
   FlashInfer. The `flashinfer_cubin` package stays without its cubins, so
@@ -211,10 +217,9 @@ weight download.
   wheels' copies are the same files. Every path stays, so nothing that
   loads a library by path changes.
 
-For v0.9.0 that is 10.58 GB of filesystem instead of 16.00 GB: 4.01 GB
-left out (25,188 entries), 7,580 files as hardlinks. The image is 5.25 GB of
-zstd layers instead of 6.62 GB, in 10 layers of at most 0.82 GB. The verify
-step proves that every remaining path carries the source's bytes and
+For v0.9.0 that is 8.32 GB of filesystem instead of 16.00 GB, for v0.8.0
+8.41 GB instead of 15.52 GB; the build's `layers.md` artifact carries the
+layer table. The verify step proves that every remaining path carries the source's bytes and
 metadata. Hopper and Blackwell nodes keep `llm-d-fast/` or the mirror. The
 other images of the mirror set are copied digest-identically under
 `llm-d-slim/` as well, so `kserve.llmisvcConfigs.imageRegistry:
