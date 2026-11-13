@@ -153,9 +153,39 @@ packages and FlashAttention 2. It then publishes with `crane push` and checks
 that the registry holds exactly the manifest it built. The job is idempotent:
 it halts when the destination's `base.digest` annotation already names the
 current source platform manifest and its `io.giantswarm.relayer.variant`
-annotation the variant being built. On branches the same job runs with
-`push: false`, so every PR — including the Renovate PR that moves the pin —
-proves the mechanism on the real image.
+annotation the variant being built. On branches the same job builds and
+verifies the real image, then publishes a commit-tagged candidate for a
+pre-merge proof (see below).
+
+### Pre-merge runtime proofs
+
+Branch pipelines publish the verified and signed runtime variants to the same
+repositories as releases, using `<upstream-version>-dev-<full-commit-sha>` tags.
+The `build-fast-image` and `build-slim-image` jobs publish the current upstream
+pin; `build-slim-image-platform-pin` also publishes the platform pin. Including
+the upstream version keeps those two slim candidates distinct. Release jobs
+continue to publish the upstream version alone. Branch builds always rebuild
+and verify the candidate, including when a job is rerun.
+
+After the relevant CircleCI job succeeds, select the PR's full head commit and
+the upstream version from that job's `version` in
+[`.circleci/custom.yml`](./.circleci/custom.yml). For example:
+
+```bash
+COMMIT='<full-pr-head-commit-sha>'
+VERSION=v0.9.0
+IMAGE="gsoci.azurecr.io/giantswarm/llm-d-slim/llm-d-cuda:${VERSION}-dev-${COMMIT}"
+crane digest "${IMAGE}"
+docker pull "${IMAGE}"
+```
+
+Use that image reference in the test deployment's worker container image,
+or pin it to the digest returned by `crane digest`, and run the GPU proof
+before merging the PR. Use `llm-d-fast` in place of `llm-d-slim` for the full
+filesystem variant, and the platform pin's version to test that slim build.
+The candidate carries the same CircleCI signature described in
+[Signatures](#signatures). Dev tags are proof artifacts; release configuration
+continues to use release tags.
 
 ### Layers of `llm-d-fast/llm-d-cuda:v0.8.0` (linux/amd64)
 
